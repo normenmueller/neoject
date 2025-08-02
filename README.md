@@ -1,9 +1,7 @@
 # Neoject
 
-> **Neoject** — A lean Cypher injector
+> **Neoject** — A lean Cypher injector  
 > **Neoject** is a pragmatic CLI to inject [Cypher](https://neo4j.com/docs/cypher-manual/current/introduction/) graph descriptions into a running Neo4j database.
-
-> **Neoject** — A pragmatic CLI to inject [Cypher](https://neo4j.com/docs/cypher-manual/current/introduction/) graph descriptions into a running Neo4j database.
 
 ## What is Neoject?
 
