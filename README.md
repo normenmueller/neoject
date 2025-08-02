@@ -6,7 +6,7 @@
 
 **Neoject** is a simple command-line tool that injects pre-generated Cypher files into a running Neo4j database instance. It is intended for use in data analytics pipelines where graph data is already exported as Cypher and now needs to be loaded into Neo4j — reliably, repeatedly, and with minimal tooling.
 
-XXX Hier einen Hinweis bzgl. "pre-generated" bzw. "exported" hinzu [Pangrm](https://github.com/normenmueller/pangrm) einfügen!
+> If you're looking for a way to generate such Cypher files from graph-based models across diverse formats, check out [Pangrm](https://github.com/normenmueller/pangrm) /ˈpæn.ɡræm/ — the universal graph model converter for exporting to Cypher.
 
 ## Why Neoject?
 
@@ -21,7 +21,7 @@ Typical Neo4j import pipelines rely on heavy tooling, custom drivers, or multi-s
 
 ## How It Works
 
-Neoject is a thin wrapper around [`cypher-shell`](https://neo4j.com/docs/operations-manual/current/tools/cypher-shell/), Neo4j’s official command-line interface.
+Neoject is a thin wrapper around [`cypher-shell`](https://neo4j.com/docs/operations-manual/current/tools/cypher-shell/), Neo4j’s official command-line interface. Cf. [ADL](./doc/adl.md#adr-wrp-cshl)
 
 You provide:
 
@@ -29,7 +29,9 @@ You provide:
 - Credentials for the running Neo4j database
 - A valid Bolt address to connect to the database instance
 
-Neoject connects to the database and executes the given file in a single transaction.
+Neoject connects to the database and executes the given file in a single transaction[^adr-sgl-trx].
+
+[^adr-sgl-trx]: Cf. [ADL](./doc/adl.md#adr-sgl-trx)
 
 ## Installation
 
@@ -237,22 +239,26 @@ Press `Ctrl+D` or type `:exit` to close the shell.
 
 ### Prepare a Cypher File
 
-Create a file named `fun.cypher`:
+Create a Cypher file with the following content:
 
-```cypher
+```bash
+cat > fun.cql <<EOF
 CREATE (f:Function {id: 1, name: "main"});
-CREATE (b:Block {id: 2});
-CREATE (f)-[:CHILD]->(b);
+CREATE (b:Body {id: 2});
+MATCH (f:Function {id:1}), (b:Body {id:2}) CREATE (f)-[:CHILD]->(b);
+EOF
 ```
 
-This file contains a small example AST fragment with two nodes and one relationship.
+This creates a file named `fun.cql` describing a minimal AST-like graph fragment with two nodes and one relationship.
+
+*Note*: Cypher input files like `fun.cypher` are meant to *define the graph only*. They may contain `CREATE`, `MERGE`, `MATCH`, etc., but they MUST NOT contain transactional control commands such as `BEGIN`, `COMMIT`, or `ROLLBACK`. Cf. [ADL](./doc/adl.md#adr-grp-oly).
 
 ### Run the Import
 
 Use `neoject` to execute the file:
 
 ```bash
-./src/neoject.sh -u neo4j -p <your-password> -a bolt://localhost:7687 -f tst/data/well-formed/valid/fun.cql
+./src/neoject.sh -u neo4j -p <your-password> -a bolt://localhost:7687 -f ./fun.cql
 0 rows
 ready to start consuming query after 0 ms, results consumed after another 0 ms
 Added 1 nodes, Set 2 properties, Added 1 labels
@@ -265,9 +271,11 @@ Created 1 relationships
 ✅ Import completed: 'tst/data/well-formed/valid/fun.cql' executed as single transaction.
 ```
 
-XXX Hier einen Satz analog zu dem connection test "This opens `cypher-shell` with no input, validating your credentials and connection." Etwas in der Art "This adds 2 nodes and 1 relation to the Neo4j DB".
+This injects the specified Cypher file as a single transaction[^adr-sgl-trx]. In this example, it creates two nodes and one relationship inside your running Neo4j database.
 
-XXX Und anfügen etwas wie "In case of error, the cypher-shell error message is return-d"
+[^adr-sgl-trx] cf. [ADL](./doc/adl.md#adr-sgl-trx)
+
+In case of errors (e.g., invalid syntax, constraint violations, missing properties), Neoject will propagate and display the error message returned by `cypher-shell`.
 
 Open Neo4j Desktop and run a query to verify:
 
