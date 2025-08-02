@@ -2,65 +2,61 @@
 title: Architecture Decision Log
 ...
 
-# ADR-001: Format-Optionen
 
-Entscheidungsmatrix:
+# ADR-001: Use Shellscript with `cypher-shell` for Data Import
 
-| Formatoption                            | Beschreibung                                                 | Bewertung                                                      |
-| --------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------- |
-| **Raw-Cypher**                          | Du erzeugst direkt `.cypher`-Dateien mit `CREATE` Statements | ✅ **Einfach, direkt importierbar**                            |
-| **CSV für `LOAD CSV`**                  | Du exportierst Knoten + Kanten als CSV-Dateien               | 🟡 **Effizienter bei großen Daten, aber komplexer in Mapping** |
-| **GraphML / GML / JSON**                | Neo4j kann manche Formate via Plugins importieren            | 🔴 **Overhead / weniger direkt / Plugin-abhängig**             |
-| **APOC `apoc.import.graphml/json/csv`** | über APOC-Skripte                                            | 🟡 **Leistungsstark, aber zusätzliche Konfiguration nötig**    |
+## Status
 
-# ADR-002: Technische Optionen zum Import
+Accepted
 
-## Mit `cypher-shell` *(offiziell empfohlen)*
+## Context
 
-**Voraussetzung:** Neo4j installiert (lokal oder remote), `cypher-shell` verfügbar (Teil von Neo4j oder Neo4j Desktop).
+To import `.cypher` files into Neo4j, multiple technical options were considered:
 
-### Beispiel-Aufruf
+- `cypher-shell` (official Neo4j CLI)
+- CSV + `LOAD CSV`
+- APOC imports
+- REST/HTTP APIs
+- Custom clients (e.g., Haskell, Python, JavaScript)
 
-```bash
-cypher-shell -u neo4j -p geheim -a bolt://localhost:7687 -f ast.cypher
-```
+Additionally, the orchestration could have been done via:
 
-**Parameter:**
+- Bash shellscript
+- Haskell CLI
+- Python script
+- Makefile automation
 
-* `-u`: Benutzername
-* `-p`: Passwort
-* `-a`: Adresse (URL, z. B. `bolt://host:port`)
-* `-f`: Pfad zur Cypher-Datei
+## Decision
 
-### Vorteile
+We use a shellscript wrapper (`neoject.sh`) that invokes the officially supported `cypher-shell` command-line client.
 
-- direkt, stabil, offiziell unterstützt
-- Skriptbar
-- gute Fehlermeldungen
-- transaktional
+## Rationale
 
-### CLI-Wrapper: Shellscript oder Haskell?
+- `cypher-shell` is **officially maintained** and **cross-platform**
+- Shellscripts are **widely available**, **zero-dependency**, and **CI-friendly**
+- Easy to invoke from Makefiles, CI/CD pipelines or manually
+- Full **transaction support** with precise error propagation
+- Easy to extend or replace later
 
-| Kriterium        | Shellscript (`bash`, `sh`)           | Haskell-CLI                        |
-| ---------------- | ------------------------------------ | ---------------------------------- |
-| Komplexität      | Niedrig                              | Hoch                               |
-| Portabilität     | Hoch (jede Unix-Shell)               | Geringer (nur mit Build/Install)   |
-| Parametrisierung | Einfach (mit `getopts`)              | Sehr flexibel, typsicher           |
-| Testbarkeit      | Eingeschränkt                        | Sehr gut, wenn modular aufgebaut   |
-| Wartbarkeit      | Schwierig bei wachsender Komplexität | Besser bei komplexen Anforderungen |
+> This is the **most pragmatic and robust approach** for building a prototype or a first functional data pipeline.
+> It gives immediate results with minimal setup, while keeping the door open for future refactoring.
 
-## Mit XXX
+## Consequences
 
-TODO
+- No need for external dependencies (e.g., Haskell toolchain)
+- Simple setup via Homebrew or direct download
+- Passwords are passed via command-line args for now (→ can be hardened later)
+- Error handling is delegated to `cypher-shell` itself
 
-## Empfehlung:
+## Alternatives Considered
 
-* **Für schnelles Arbeiten + CI/CD**: Shellscript mit `cypher-shell`
-* **Für robuste Distribution + Tooling**: Haskell-CLI mit Argumenten-Parsing + Logging
+- A fully typed Haskell CLI for richer UX (rejected due to overhead at this stage)
+- Using Neo4j’s HTTP REST interface directly (less ergonomic)
+- CSV-based import (requires custom mapping logic and multiple steps)
 
-## Fazit
+## Future Considerations
 
-> Shellscript mit `cypher-shell` als *Backend*.
-
-
+- Introduce a Haskell CLI once the system complexity grows
+- Add `.env` file parsing or interactive password prompts
+- Refactor into reusable CLI components (logging, output formatting, etc.)
 
