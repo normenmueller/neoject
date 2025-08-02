@@ -253,13 +253,23 @@ Use `neoject` to execute the file:
 
 ```bash
 ./src/neoject.sh -u neo4j -p <your-password> -a bolt://localhost:7687 -f tst/data/well-formed/valid/fun.cql
+0 rows
+ready to start consuming query after 0 ms, results consumed after another 0 ms
+Added 1 nodes, Set 2 properties, Added 1 labels
+0 rows
+ready to start consuming query after 1 ms, results consumed after another 0 ms
+Added 1 nodes, Set 1 properties, Added 1 labels
+0 rows
+ready to start consuming query after 13 ms, results consumed after another 0 ms
+Created 1 relationships
+✅ Import completed: 'tst/data/well-formed/valid/fun.cql' executed as single transaction.
 ```
 
-### Expected Result
+XXX Hier einen Satz analog zu dem connection test "This opens `cypher-shell` with no input, validating your credentials and connection." Etwas in der Art "This adds 2 nodes and 1 relation to the Neo4j DB".
 
-- The script runs without errors
-- If the file is empty or invalid, `cypher-shell` returns an error
-- Open Neo4j Desktop and run a query to verify:
+XXX Und anfügen etwas wie "In case of error, the cypher-shell error message is return-d"
+
+Open Neo4j Desktop and run a query to verify:
 
 ```cypher
 MATCH (n) RETURN n;
