@@ -123,6 +123,13 @@ set PATH=C:\neo4j-cli\bin;%PATH%
 
 After installation, you should be able to run `cypher-shell` from any terminal.
 
+### Clone the Repo
+
+```bash
+git clone https://github.com/normenmueller/neoject.git
+cd neoject
+```
+
 ## Setup
 
 ### Create a Graph Database in Neo4j Desktop
@@ -159,14 +166,7 @@ bolt://localhost:7687
 
 Details on how to assemble this URL follow below.
 
-### Clone Repository & Prepare Neoject
-
-#### Clone the Repo
-
-```bash
-git clone https://github.com/normenmueller/neoject.git
-cd neoject
-```
+### Prepare Neoject
 
 #### Determine Connection Details
 
@@ -194,41 +194,44 @@ bolt://localhost:7687
 
 You will pass this value to `neoject` using the `-a` flag.
 
-## Connection Test
+#### Connection Test
 
 Before importing data, test your connection setup.
 
-Run `neoject` without a file:
+Run `neoject` test connection mode:
 
 ```bash
-./neoject -u neo4j -p <your-password> -a bolt://localhost:7687
+./src/neoject.sh --test-con -u neo4j -p <your-password> -a bolt://localhost:7687
+✅ Connection successful
 ```
 
 This opens `cypher-shell` with no input, validating your credentials and connection.
-
-### Expected Output
-
-If successful, no errors will appear. You may see something like:
-
-```text
-Connected to Neo4j at bolt://localhost:7687 as user neo4j.
-Type :help for a list of available commands or :exit to exit the shell.
-```
-
-Press `Ctrl+D` or type `:exit` to close the shell.
-
-### Common Issues
-
-- Wrong Bolt URL (wrong port or IP)
-- Database not started
-- Incorrect password
-- Firewall/VPN blocks Bolt access
 
 You can also test directly using `cypher-shell`:
 
 ```bash
 cypher-shell -u neo4j -p <your-password> -a bolt://localhost:7687
 ```
+
+If successful, no errors will appear. You may see something like:
+
+```text
+Connected to Neo4j using Bolt protocol version 5.8 at bolt://localhost:7687 as user neo4j.
+Type :help for a list of available commands or :exit to exit the shell.
+Note that Cypher queries must end with a semicolon.
+neo4j@neo4j> :exit
+
+Bye!
+```
+
+Press `Ctrl+D` or type `:exit` to close the shell.
+
+**Common Issues**
+
+- Wrong Bolt URL (wrong port or IP)
+- Database not started
+- Incorrect password
+- Firewall/VPN blocks Bolt access
 
 ## Usage
 
@@ -249,7 +252,7 @@ This file contains a small example AST fragment with two nodes and one relations
 Use `neoject` to execute the file:
 
 ```bash
-./neoject -f fun.cypher -u neo4j -p <your-password> -a bolt://localhost:7687
+./src/neoject.sh -u neo4j -p <your-password> -a bolt://localhost:7687 -f tst/data/well-formed/valid/fun.cql
 ```
 
 ### Expected Result
@@ -266,7 +269,7 @@ You should see two nodes and one relationship.
 
 ### Notes
 
-- **Transactions:** The file is executed in a single transaction. If one statement fails, nothing is committed.
+- **Transactions:** The file is executed in a single transaction. If one statement fails, nothing is committed. Variable scoping across statements is preserved — unlike `cypher-shell -f`, which runs each line separately unless wrapped.
 - **Security:** Never store passwords in version control.
   Consider using `.env` files or interactive prompts (to be added later).
 
