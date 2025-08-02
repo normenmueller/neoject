@@ -21,7 +21,7 @@ Typical Neo4j import pipelines rely on heavy tooling, custom drivers, or multi-s
 
 ## How It Works
 
-Neoject is a thin wrapper around [`cypher-shell`](https://neo4j.com/docs/operations-manual/current/tools/cypher-shell/), Neo4j’s official command-line interface. Cf. [ADL](./doc/adl.md#adr-wrp-cshl)
+Neoject is a thin wrapper around [`cypher-shell`](https://neo4j.com/docs/operations-manual/current/tools/cypher-shell/), Neo4j’s official command-line interface. Cf. [ADL](doc/adl.md#adr-wrp-cshl).
 
 You provide:
 
@@ -30,8 +30,6 @@ You provide:
 - A valid Bolt address to connect to the database instance
 
 Neoject connects to the database and executes the given file in a single transaction[^adr-sgl-trx].
-
-[^adr-sgl-trx]: Cf. [ADL](./doc/adl.md#adr-sgl-trx)
 
 ## Installation
 
@@ -116,7 +114,7 @@ Or download manually from: [Neo4j CLI Tools](https://neo4j.com/deployment-center
 
 On Windows, `cypher-shell.bat` is part of the Neo4j CLI tools. You may need to download and extract it:
 
-- [Download Neo4j Cypher Shell (ZIP)](https://neo4j.com/download-center/#command-line-tools)
+- [Download Neo4j Cypher Shell (ZIP)](https://neo4j.com/deployment-center/)
 - Extract and add `bin` to your `PATH`:
 
 ```cmd
@@ -251,7 +249,7 @@ EOF
 
 This creates a file named `fun.cql` describing a minimal AST-like graph fragment with two nodes and one relationship.
 
-*Note*: Cypher input files like `fun.cypher` are meant to *define the graph only*. They may contain `CREATE`, `MERGE`, `MATCH`, etc., but they MUST NOT contain transactional control commands such as `BEGIN`, `COMMIT`, or `ROLLBACK`. Cf. [ADL](./doc/adl.md#adr-grp-oly).
+*Note*: Cypher input files like `fun.cypher` are meant to *define the graph only*. They may contain `CREATE`, `MERGE`, `MATCH`, etc., but they MUST NOT contain transactional control commands such as `BEGIN`, `COMMIT`, or `ROLLBACK`. Cf. [ADL](doc/adl.md#adr-grp-oly).
 
 ### Run the Import
 
@@ -272,8 +270,6 @@ Created 1 relationships
 ```
 
 This injects the specified Cypher file as a single transaction[^adr-sgl-trx]. In this example, it creates two nodes and one relationship inside your running Neo4j database.
-
-[^adr-sgl-trx] cf. [ADL](./doc/adl.md#adr-sgl-trx)
 
 In case of errors (e.g., invalid syntax, constraint violations, missing properties), Neoject will propagate and display the error message returned by `cypher-shell`.
 
@@ -310,4 +306,7 @@ We welcome contributions!
 
 See [LICENSE](./LICENSE)
 © 2025 [nemron](https://github.com/normenmueller)
+
+[^adr-sgl-trx]: Cf. [ADL](doc/adl.md#adr-sgl-trx).
+
 
