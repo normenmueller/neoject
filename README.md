@@ -29,7 +29,7 @@ You provide:
 - Credentials for the running Neo4j database
 - A valid Bolt address to connect to the database instance
 
-Neoject connects to the database and executes the given file in a single transaction[^adr-sgl-trx].
+Neoject connects to the database and executes the given file in a single transaction[^adl-sgl-trx].
 
 ## Installation
 
@@ -269,7 +269,7 @@ Created 1 relationships
 ✅ Import completed: 'tst/data/well-formed/valid/fun.cql' executed as single transaction.
 ```
 
-This injects the specified Cypher file as a single transaction[^adr-sgl-trx]. In this example, it creates two nodes and one relationship inside your running Neo4j database.
+This injects the specified Cypher file as a single transaction[^adl-sgl-trx]. In this example, it creates two nodes and one relationship inside your running Neo4j database.
 
 In case of errors (e.g., invalid syntax, constraint violations, missing properties), Neoject will propagate and display the error message returned by `cypher-shell`.
 
@@ -307,6 +307,6 @@ We welcome contributions!
 See [LICENSE](./LICENSE)
 © 2025 [nemron](https://github.com/normenmueller)
 
-[^adr-sgl-trx]: Cf. [ADL](doc/adl.md#adr-sgl-trx).
+[^adl-sgl-trx]: Cf. [ADL](doc/adl.md#adr-sgl-trx).
 
 
