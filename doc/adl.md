@@ -72,11 +72,13 @@ We use a shellscript wrapper (`neoject.sh`) that invokes the officially supporte
 
 ## Status
 
-Accepted
+Reassess
 
 ## Context
 
 Cypher input files like `fun.cypher` are meant to define the graph only. They contain `CREATE`, `MERGE`, `MATCH`, etc., but no transactional control commands such as `BEGIN`, `COMMIT`, or `ROLLBACK`.
+
+XXX Was alles genau können wir verarbeiten? `CREATE`, `MERGE`, `MATCH` und? `UNWIND`? `SET`?
 
 However, when running Cypher scripts via `cypher-shell`, each statement is executed in isolation unless explicitly wrapped in a transaction. This leads to loss of scoped variables (like `f`, `b`, etc.) and can silently break multi-statement logic.
 

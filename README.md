@@ -1,3 +1,14 @@
+# Todos
+
+## `neo4j.conf` pre-requisites
+
+Damit `--clean-db` funktioniert:
+
+````
+dbms.security.procedures.unrestricted=apoc.*
+dbms.security.procedures.allowlist=apoc.*
+````
+
 # Neoject
 
 > **Neoject** — A lean Cypher injector
@@ -29,7 +40,7 @@ You provide:
 
 - A `.cypher` file with graph data (usually `CREATE` statements)
 - Credentials for the running Neo4j database
-- A valid Bolt address to connect to the database instance
+- A valid Neo4j address (fka. *bolt* address to connect to the database instance
 
 Neoject connects to the database and executes the given file in a single transaction[^adl-sgl-trx].
 
@@ -40,11 +51,11 @@ Neoject connects to the database and executes the given file in a single transac
 Neoject requires two components:
 
 1. **Neo4j Desktop** – a GUI tool for managing local Neo4j database instances
-2. **`cypher-shell`** – a command-line tool for executing `.cypher` files into Neo4j over Bolt
+2. **`cypher-shell`** – a command-line tool for executing `.cypher` files into Neo4j
 
 > Note: **Neo4j Desktop does *not* include `cypher-shell`**. It must be installed separately (e.g., via Homebrew or manual download).
 
-Neo4j Desktop and `cypher-shell` operate independently and communicate solely via the Bolt protocol (`bolt://localhost:7687`).
+Neo4j Desktop and `cypher-shell` operate independently and communicate solely via the Neo4j protocol (`neo4j://localhost:7687`).
 There are no version conflicts as long as you don’t attempt to run multiple server instances simultaneously.
 
 ### Install Neo4j Desktop
@@ -160,10 +171,10 @@ Password: (your chosen password)
 ```
 
 *Note:* The database must be running before using `neoject` or `cypher-shell`.
-You will connect via the *Bolt* protocol, typically:
+You will connect via the *Neo4j* protocol, typically:
 
 ```text
-bolt://localhost:7687
+neo4j://localhost:7687
 ```
 
 Details on how to assemble this URL follow below.
@@ -172,7 +183,7 @@ Details on how to assemble this URL follow below.
 
 #### Determine Connection Details
 
-To connect `neoject` or `cypher-shell` to your database, you need the **Bolt URL**.
+To connect `neoject` or `cypher-shell` to your database, you need the **Neo4j URL**.
 
 In Neo4j Desktop:
 
@@ -180,18 +191,18 @@ In Neo4j Desktop:
 2. Click **“Connection Details”** (chain icon).
 3. Note:
    - **IP address** (typically `localhost`)
-   - **Bolt port** (typically `7687`)
+   - **Neo4j port** (typically `7687`)
 
-Then assemble the Bolt URL:
+Then assemble the Neo4j URL:
 
 ```text
-bolt://<IP address>:<Bolt port>
+neo4j://<IP address>:<Neo4j port>
 ```
 
 Standard case:
 
 ```text
-bolt://localhost:7687
+neo4j://localhost:7687
 ```
 
 You will pass this value to `neoject` using the `-a` flag.
@@ -203,7 +214,7 @@ Before importing data, test your connection setup.
 Run `neoject` test connection mode:
 
 ```bash
-./src/neoject.sh --test-con -u neo4j -p <your-password> -a bolt://localhost:7687
+./src/neoject.sh --test-con -u neo4j -p <your-password> -a neo4j://localhost:7687
 ✅ Connection successful
 ```
 
@@ -212,13 +223,13 @@ This opens `cypher-shell` with no input, validating your credentials and connect
 You can also test directly using `cypher-shell`:
 
 ```bash
-cypher-shell -u neo4j -p <your-password> -a bolt://localhost:7687
+cypher-shell -u neo4j -p <your-password> -a neo4j://localhost:7687
 ```
 
 If successful, no errors will appear. You may see something like:
 
 ```text
-Connected to Neo4j using Bolt protocol version 5.8 at bolt://localhost:7687 as user neo4j.
+Connected to Neo4j using Bolt protocol version 5.8 at neo4j://localhost:7687 as user neo4j.
 Type :help for a list of available commands or :exit to exit the shell.
 Note that Cypher queries must end with a semicolon.
 neo4j@neo4j> :exit

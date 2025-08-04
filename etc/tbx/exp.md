@@ -35,7 +35,7 @@ echo "<kopierter cypherStatements‑Text>" > export.cql
 # Import via `neoject.sh`:
 
 ```bash
-./src/neoject.sh --clean-db -u neo4j -p <password> -a bolt://localhost:7687 -f export.cql
+./src/neoject.sh --clean-db -u neo4j -p <password> -a neo4j://localhost:7687 -f export.cql
 ```
 
 Damit wird der gesamte Graph in einem einzelnen, atomaren Import in Neo4j eingespielt.

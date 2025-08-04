@@ -2,9 +2,75 @@
 set -euo pipefail
 > neoject.log
 
-TEST_MODE=false
+TEST_CON=false
 CLEAN_DB=false
 declare -a EXTRA_ARGS=()
+
+# ⚠️  Access to the system database required
+resetdb() {
+  echo "------------------------------"
+  echo "⚠️  Resetting database '$dbname'..."
+  local dbname="${1:-neo4j}"  # Default: 'neo4j'
+  {
+    echo "DROP DATABASE $dbname IF EXISTS;"
+    echo "CREATE DATABASE $dbname;"
+  } | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database system --format verbose 2>&1 \
+    | tee -a neoject.log
+  echo "✅ Database '$dbname' dropped and recreated."
+  echo "⏳ Waiting for database to come online..."
+  sleep 5
+}
+
+delnds() {
+  echo "------------------------------"
+  echo "⚠️  Deleting all nodes using APOC (batchSize=10000)..."
+  {
+    echo 'CALL apoc.periodic.iterate('
+    echo '  "MATCH (n) RETURN n",'
+    echo '  "DETACH DELETE n",'
+    echo '  {batchSize:10000, parallel:false}'
+    echo ')'
+    echo 'YIELD timeTaken, batches, total'
+    echo 'RETURN timeTaken, batches, total;'
+  } | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain 2>&1 \
+    | tee -a neoject.log
+  echo "✅ APOC-based node deletion completed."
+}
+
+drpcst() {
+  echo "------------------------------"
+  echo "⚠️  Dropping all constraints..."
+  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "SHOW CONSTRAINTS YIELD name RETURN name;" \
+    | tail -n +2 | while read -r cname; do
+        # Entferne doppelte Anführungszeichen (") aus dem Constraint-Namen
+        cname=${cname//\"/}
+        [[ -n "$cname" ]] && {
+          echo "    ➤ Dropping constraint: $cname"
+          echo "DROP CONSTRAINT \`$cname\`;" \
+            | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" \
+              --format verbose 2>&1 | tee -a neoject.log
+        }
+      done
+  echo "✅ Constraints dropped."
+}
+
+drpidx() {
+  echo "------------------------------"
+  echo "⚠️  Dropping all indexes..."
+
+  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "SHOW INDEXES YIELD name RETURN name;" \
+    | tail -n +2 | while read -r iname; do
+        iname=${iname//\"/}  # Entferne doppelte Anführungszeichen
+        [[ -n "$iname" ]] && {
+          echo "    ➤ Dropping index: $iname"
+          echo "DROP INDEX \`$iname\`;" \
+            | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" \
+              --format verbose 2>&1 | tee -a neoject.log
+        }
+      done
+
+  echo "✅ Indexes dropped."
+}
 
 # Argument parsing
 while [[ $# -gt 0 ]]; do
@@ -13,7 +79,7 @@ while [[ $# -gt 0 ]]; do
     -u|--user) USER="$2"; shift 2 ;;
     -p|--password) PASSWORD="$2"; shift 2 ;;
     -a|--address) ADDRESS="$2"; shift 2 ;;
-    --test-con) TEST_MODE=true; shift ;;
+    --test-con) TEST_CON=true; shift ;;
     --clean-db) CLEAN_DB=true; shift ;;
     *) # passthrough unknown args
       EXTRA_ARGS+=("$1"); shift ;;
@@ -21,7 +87,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Enforce mutual exclusivity
-if [[ "$TEST_MODE" == true && -n "${FILE:-}" ]]; then
+if [[ "$TEST_CON" == true && -n "${FILE:-}" ]]; then
   echo "❌ Options --test-con and -f are mutually exclusive."
   exit 1
 fi
@@ -33,7 +99,7 @@ if [[ -z "${USER:-}" || -z "${PASSWORD:-}" || -z "${ADDRESS:-}" ]]; then
 fi
 
 # Connection test
-if [[ "$TEST_MODE" == true ]]; then
+if [[ "$TEST_CON" == true ]]; then
   if cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]:-}"; then
     echo "✅ Connection successful"
     exit 0
@@ -55,26 +121,25 @@ fi
 
 # Optional: clean the database first
 if [[ "$CLEAN_DB" == true ]]; then
-  echo "🧹 Cleaning database (MATCH (n) DETACH DELETE n;)"
-  {
-    echo "MATCH (n) DETACH DELETE n;"
-  } | tee -a neoject.log \
-    | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose 2>&1
+  echo "🧹 Cleaning database: nodes, constraints, indexes..."
+  delnds
+  drpcst
+  drpidx
   echo "🧹 Database cleaned."
 fi
 
 # Now import the AST as a single transaction
-tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose 2>&1
-:begin
-$(cat "$FILE")
-:commit
-EOF
-
-EXIT_CODE=$?
-if [[ $EXIT_CODE -eq 0 ]]; then
-  echo "✅ Import completed: '$FILE' executed as single transaction."
-else
-  echo "❌ Import failed for file '$FILE' (exit code $EXIT_CODE)"
-  exit $EXIT_CODE
-fi
+#tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose 2>&1
+#:begin
+#$(cat "$FILE")
+#:commit
+#EOF
+#
+#EXIT_CODE=$?
+#if [[ $EXIT_CODE -eq 0 ]]; then
+#  echo "✅ Import completed: '$FILE' executed as single transaction."
+#else
+#  echo "❌ Import failed for file '$FILE' (exit code $EXIT_CODE)"
+#  exit $EXIT_CODE
+#fi
 
