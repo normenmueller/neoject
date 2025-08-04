@@ -55,11 +55,13 @@ check_version() {
 
   version=${version//\"/}  # Entfernt doppelte Anführungszeichen
 
+  log "🧬 neoject, v$VERSION"
   log "ℹ️  Connected to Neo4j version $version"
+  log "------------------------------"
 
   if [[ "$version" != 5* ]]; then
-    log "❌ Unsupported Neo4j version: $version. This script requires Neo4j v5.x."
-    exit EXIT_UNSUPPORTED_NEO4J_VERSION
+    log "❌ Unsupported Neo4j version: $version. Neoject requires Neo4j v5.x."
+    usage $EXIT_UNSUPPORTED_NEO4J_VERSION
   fi
 }
 
@@ -264,8 +266,6 @@ if [[ ! -s "$FILE" ]]; then
   exit $EXIT_FILE_UNREADABLE
 fi
 
-echo "🧬 neoject, v$VERSION"
-
 # Optional: reset or clean the database first
 if [[ "$RESET_DB" == true ]]; then
   resetdb
@@ -274,19 +274,19 @@ elif [[ "$CLEAN_DB" == true ]]; then
 fi
 
 # Now import the AST as a single transaction
-#tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose --fail-fast 2>&1
-#:begin
-#$(cat "$FILE")
-#:commit
-#EOF
-#
-#EXIT_CODE=$?
-#if [[ $EXIT_CODE -eq 0 ]]; then
-#  log "✅ Import completed: '$FILE' executed as single transaction."
-#  exit $EXIT_SUCCESS
-#else
-#  log "❌ Import failed for file '$FILE' (exit code $EXIT_CODE)"
-#  exit $EXIT_IMPORT_FAILED
-#  #exit $EXIT_CODE
-#fi
+tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose --fail-fast 2>&1
+:begin
+$(cat "$FILE")
+:commit
+EOF
+
+EXIT_CODE=$?
+if [[ $EXIT_CODE -eq 0 ]]; then
+  log "✅ Import completed: '$FILE' executed as single transaction."
+  exit $EXIT_SUCCESS
+else
+  log "❌ Import failed for file '$FILE' (exit code $EXIT_CODE)"
+  exit $EXIT_IMPORT_FAILED
+  #exit $EXIT_CODE
+fi
 
