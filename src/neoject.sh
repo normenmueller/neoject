@@ -38,6 +38,22 @@ delnds() {
 }
 
 drpcst() {
+  echo "⚠️  Dropping all constraints (Neo4j 5)..."
+  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "SHOW CONSTRAINTS YIELD name RETURN name;" \
+    | tail -n +2 | while read -r cname; do
+        cname=${cname//\"/}
+        [[ -n "$cname" ]] && {
+          echo "    ➤ Dropping constraint: $cname"
+          echo "CALL db.dropConstraint('$cname');" \
+            | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose 2>&1 \
+            | tee -a neoject.log
+        }
+      done
+
+  echo "✅ Constraints dropped."
+}
+
+drpcst4() {
   echo "------------------------------"
   echo "⚠️  Dropping all constraints..."
   cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "SHOW CONSTRAINTS YIELD name RETURN name;" \
@@ -55,6 +71,21 @@ drpcst() {
 }
 
 drpidx() {
+  echo "⚠️  Dropping all indexes (Neo4j 5)..."
+  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "SHOW INDEXES YIELD name RETURN name;" \
+    | tail -n +2 | while read -r iname; do
+        iname=${iname//\"/}
+        [[ -n "$iname" ]] && {
+          echo "    ➤ Dropping index: $iname"
+          echo "CALL db.dropIndex('$iname');" \
+            | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose 2>&1 \
+            | tee -a neoject.log
+        }
+      done
+  echo "✅ Indexes dropped."
+}
+
+drpidx4() {
   echo "------------------------------"
   echo "⚠️  Dropping all indexes..."
 
@@ -64,8 +95,8 @@ drpidx() {
         [[ -n "$iname" ]] && {
           echo "    ➤ Dropping index: $iname"
           echo "DROP INDEX \`$iname\`;" \
-            | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" \
-              --format verbose 2>&1 | tee -a neoject.log
+            | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose 2>&1 \
+            | tee -a neoject.log
         }
       done
 
