@@ -2,291 +2,280 @@
 set -euo pipefail
 > neoject.log
 
-VERSION=0.1
+VERSION="0.2.3"
 
-TEST_CON=false
+# -----------------------------------------------------------------------------
+# Exit Codes
+# -----------------------------------------------------------------------------
+
+readonly EXIT_SUCCESS=0
+readonly EXIT_USAGE=1
+readonly EXIT_INVALID_SUBCOMMAND=2
+readonly EXIT_MISSING_BASE_PARAMS=3
+readonly EXIT_UNSUPPORTED_NEO4J_VERSION=4
+readonly EXIT_CONNECTION_FAILED=5
+readonly EXIT_FILE_UNREADABLE=6
+readonly EXIT_APOC_NOT_INSTALLED=7
+readonly EXIT_DB_TIMEOUT=8
+readonly EXIT_IMPORT_FAILED=9
+readonly EXIT_MUTUAL_EXCLUSIVE_CLEAN_RESET=10
+readonly EXIT_INVALID_DDL_USAGE=11
+
+# -----------------------------------------------------------------------------
+# Global State
+# -----------------------------------------------------------------------------
+
+USER=""
+PASSWORD=""
+ADDRESS=""
 
 CLEAN_DB=false
 RESET_DB=false
 
-declare -a EXTRA_ARGS=()
+CMD=""
+GRAPH=""
+DDL_PRE=""
+DDL_POST=""
+MIXED_FILE=""
 
-usage() {
-  local code="${1:-$EXIT_USAGE}"
-  echo "🧬 neoject, v$VERSION"
-  echo "Usage: neoject.sh [-h | --help]"
-  echo "                  (-f <cypher file> | --test-con)"
-  echo "                  [--clean-db | --reset-db]"
-  echo "                  -u <user> -p <password>"
-  echo "                  -a <neo4j://host:port>"
-  echo "© 2025 nemron"
-  exit "$code"
-}
+EXTRA_ARGS=()
 
-# ----------------------------------------------------------------------------
-# Exit Codes
-# ----------------------------------------------------------------------------
-
-readonly EXIT_SUCCESS=0
-readonly EXIT_USAGE=1
-readonly EXIT_MUTUAL_EXCLUSIVE_TEST_FILE=2
-readonly EXIT_MUTUAL_EXCLUSIVE_CLEAN_RESET=3
-readonly EXIT_MISSING_BASE_PARAMS=4
-readonly EXIT_UNSUPPORTED_NEO4J_VERSION=5
-readonly EXIT_CONNECTION_FAILED=6
-readonly EXIT_MISSING_FILE_PARAM=7
-readonly EXIT_FILE_UNREADABLE=8
-readonly EXIT_DB_TIMEOUT=9
-readonly EXIT_IMPORT_FAILED=10
-readonly EXIT_APOC_NOT_INSTALLED=11
-
-# ----------------------------------------------------------------------------
-# Utility Functions
-# ----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Logging & Help
+# -----------------------------------------------------------------------------
 
 log() {
   echo "[$(date +'%F %T')] $*" | tee -a neoject.log >&2
 }
 
-check_version() {
-  local version
-  version=$(cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain \
-    <<< "CALL dbms.components() YIELD versions RETURN versions[0];" | tail -n 1)
+usage() {
+  cat <<EOF
+🧬 neoject v$VERSION
+© 2025 nemron
 
-  version=${version//\"/}  # Entfernt doppelte Anführungszeichen
+Usage:
+  neoject.sh -u <user> -p <password> -a <address> [cypher-shell options] <subcommand> [args]
 
-  log "🧬 neoject, v$VERSION"
-  log "ℹ️  Connected to Neo4j version $version"
-  log "------------------------------"
+Subcommands:
+  test-con                       Test Neo4j connectivity (no DB changes)
+  slurp     -g <graph> [--ddl-pre <pre>] [--ddl-post <post>]
+                                 Import graph with optional DDL pre/post
+  apply     -f <file>            Execute mixed Cypher file (DDL + data)
+  help [<cmd>]                   Show general or subcommand-specific help
 
-  if [[ "$version" != 5* ]]; then
-    log "❌ Unsupported Neo4j version: $version. Neoject requires Neo4j v5.x."
-    usage $EXIT_UNSUPPORTED_NEO4J_VERSION
-  fi
+Base Options:
+  -u|--user <user>               Neo4j username (required)
+  -p|--password <password>       Neo4j password (required)
+  -a|--address <addr>            e.g. bolt://localhost:7687 (required)
+
+Import Options (for slurp/apply only):
+  --clean-db                     Remove all nodes, indexes, constraints
+  --reset-db                     Drop and recreate database (system access)
+
+Notes:
+  - Exactly one of: test-con | slurp | apply must be provided
+  - --clean-db and --reset-db are mutually exclusive
+  - --ddl-pre and --ddl-post are valid only with slurp
+  - All extra args passed after -a ... are forwarded to cypher-shell
+EOF
+  exit ${1:-$EXIT_USAGE}
 }
 
-# ⚠️  Access to the system database required
+sub_help() {
+  case "$1" in
+    slurp) cat <<EOF
+🧬 Help: slurp
+Usage:
+  neoject slurp -g <graph.cypher> [--ddl-pre <pre.cypher>] [--ddl-post <post.cypher>]
+Options:
+  --clean-db     Clean current database (nodes, constraints, indexes)
+  --reset-db     Drop and recreate the database
+Notes:
+  - All files must be readable
+  - DDL files are executed outside of the transaction
+EOF
+      ;;
+    apply) cat <<EOF
+🧬 Help: apply
+Usage:
+  neoject apply -f <mixed.cypher>
+Options:
+  --clean-db     Clean current database (nodes, constraints, indexes)
+  --reset-db     Drop and recreate the database
+Notes:
+  - File must contain semicolon-terminated Cypher statements
+  - No :begin/:commit must appear in the file
+  - APOC must be installed (uses apoc.cypher.runFile)
+EOF
+      ;;
+    test-con) cat <<EOF
+🧬 Help: test-con
+Usage:
+  neoject test-con
+Description:
+  Verifies connection/authentication with given -u/-p/-a parameters.
+EOF
+      ;;
+    *) usage ;;
+  esac
+  exit 0
+}
+
+# -----------------------------------------------------------------------------
+# Validation & Environment
+# -----------------------------------------------------------------------------
+
+check_version() {
+  local version
+  version=$(cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< \
+    "CALL dbms.components() YIELD versions RETURN versions[0];" | tail -n 1)
+  version=${version//\"/}
+  log "ℹ️  Connected to Neo4j version $version"
+  [[ "$version" != 5* ]] && {
+    log "❌ Neoject requires Neo4j v5.x – detected: $version"
+    exit $EXIT_UNSUPPORTED_NEO4J_VERSION
+  }
+}
+
 resetdb() {
-  local dbname="${1:-neo4j}"  # Default: 'neo4j'
-  log "------------------------------"
+  local dbname="neo4j"
   log "⚠️  Resetting database '$dbname'..."
   {
     echo "DROP DATABASE $dbname IF EXISTS;"
     echo "CREATE DATABASE $dbname;"
-  } | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database system --format verbose 2>&1 \
-    | tee -a neoject.log
-  log "✅ Database '$dbname' dropped and recreated."
-  log "⏳ Waiting for database to come online..."
+  } | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database system --format verbose "${EXTRA_ARGS[@]}" | tee -a neoject.log
 
-  # Wait up to 30s for DB to become online
   for i in {1..30}; do
-    local status
-    status=$(cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database system --format plain \
-      <<< "SHOW DATABASES YIELD name, currentStatus WHERE name = '$dbname' RETURN currentStatus;" \
-      | tail -n 1 | tr -d '"')
-
-    if [[ "$status" == "online" ]]; then
-      log "✅ Database '$dbname' is online."
-      return 0
-    fi
-
+    status=$(cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database system --format plain <<< \
+      "SHOW DATABASES YIELD name, currentStatus WHERE name = '$dbname' RETURN currentStatus;" | tail -n 1 | tr -d '"')
+    [[ "$status" == "online" ]] && { log "✅ Database is online."; return 0; }
     sleep 1
   done
-
-  log "❌ Timeout waiting for database '$dbname' to come online."
-  exit EXIT_DB_TIMEOUT
+  log "❌ Timeout waiting for database to become available."
+  exit $EXIT_DB_TIMEOUT
 }
 
 cleandb() {
-  log "🧹 Cleaning database: nodes, constraints, indexes..."
-  delnds
-  drpcst
-  drpidx
-  log "🧹 Database cleaned."
-}
-
-delnds() {
-  log "------------------------------"
-
-  #local apoc_version
+  log "🧹 Cleaning database..."
   cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "RETURN apoc.version()" &>/dev/null \
-    || { log "❌ APOC not available – cannot clean nodes"; exit EXIT_APOC_NOT_INSTALLED; }
-  # or:
-  #apoc_version=$(cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "RETURN apoc.version()" 2>/dev/null | tail -n 1)
-  #
-  #if [[ -z "$apoc_version" ]]; then
-  #  log "❌ APOC not available – cannot clean nodes"
-  #  exit 1
-  #fi
+    || { log "❌ APOC not available"; exit $EXIT_APOC_NOT_INSTALLED; }
 
-  log "⚠️  Deleting all nodes using APOC (batchSize=10000)..."
-  {
-    echo 'CALL apoc.periodic.iterate('
-    echo '  "MATCH (n) RETURN n",'
-    echo '  "DETACH DELETE n",'
-    echo '  {batchSize:10000, parallel:false}'
-    echo ')'
-    echo 'YIELD timeTaken, batches, total'
-    echo 'RETURN timeTaken, batches, total;'
-  } | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain 2>&1 \
+  log "  ➤ Deleting nodes..."
+  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< \
+    'CALL apoc.periodic.iterate("MATCH (n) RETURN n", "DETACH DELETE n", {batchSize:10000}) YIELD batches RETURN batches;' \
     | tee -a neoject.log
-  log "✅ APOC-based node deletion completed."
-}
 
-drpcst() {
-  log "⚠️  Dropping all constraints (Neo4j 5)..."
+  log "  ➤ Dropping constraints..."
   cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "SHOW CONSTRAINTS YIELD name RETURN name;" \
-    | tail -n +2 | while read -r cname; do
-        cname=${cname//\"/}
-        [[ -n "$cname" ]] && {
-          log "    ➤ Dropping constraint: $cname"
-          echo "CALL db.dropConstraint('$cname');" \
-            | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose 2>&1 \
-            | tee -a neoject.log
-        }
-      done
+    | tail -n +2 | while read -r c; do
+      [[ -n "$c" ]] && cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" <<< "CALL db.dropConstraint('${c//\"/}');"
+    done
 
-  log "✅ Constraints dropped."
-}
-
-drpcst4() {
-  log "------------------------------"
-  log "⚠️  Dropping all constraints..."
-  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "SHOW CONSTRAINTS YIELD name RETURN name;" \
-    | tail -n +2 | while read -r cname; do
-        # Entferne doppelte Anführungszeichen (") aus dem Constraint-Namen
-        cname=${cname//\"/}
-        [[ -n "$cname" ]] && {
-          log "    ➤ Dropping constraint: $cname"
-          echo "DROP CONSTRAINT \`$cname\`;" \
-            | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" \
-              --format verbose 2>&1 | tee -a neoject.log
-        }
-      done
-  log "✅ Constraints dropped."
-}
-
-drpidx() {
-  log "⚠️  Dropping all indexes (Neo4j 5)..."
+  log "  ➤ Dropping indexes..."
   cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "SHOW INDEXES YIELD name RETURN name;" \
-    | tail -n +2 | while read -r iname; do
-        iname=${iname//\"/}
-        [[ -n "$iname" ]] && {
-          log "    ➤ Dropping index: $iname"
-          echo "CALL db.dropIndex('$iname');" \
-            | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose 2>&1 \
-            | tee -a neoject.log
-        }
-      done
-  log "✅ Indexes dropped."
+    | tail -n +2 | while read -r i; do
+      [[ -n "$i" ]] && cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" <<< "CALL db.dropIndex('${i//\"/}');"
+    done
+
+  log "✅ Database cleaned"
 }
 
-drpidx4() {
-  log "------------------------------"
-  log "⚠️  Dropping all indexes..."
+# -----------------------------------------------------------------------------
+# Core Commands
+# -----------------------------------------------------------------------------
 
-  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "SHOW INDEXES YIELD name RETURN name;" \
-    | tail -n +2 | while read -r iname; do
-        iname=${iname//\"/}  # Entferne doppelte Anführungszeichen
-        [[ -n "$iname" ]] && {
-          log "    ➤ Dropping index: $iname"
-          echo "DROP INDEX \`$iname\`;" \
-            | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose 2>&1 \
-            | tee -a neoject.log
-        }
-      done
-
-  log "✅ Indexes dropped."
+import_file_apoc() {
+  local file="$1"
+  local abs_path
+  abs_path=$(realpath "$file")
+  local target="/tmp/$(basename "$abs_path")"
+  cp "$abs_path" "$target"
+  log "📥 Importing mixed Cypher via APOC: $target"
+  echo "CALL apoc.cypher.runFile(\"file://$target\", {useTx:false});" \
+    | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]}" \
+    | tee -a neoject.log
 }
 
-# ----------------------------------------------------------------------------
-# Argument parsing & validation
-# ----------------------------------------------------------------------------
+run_slurp() {
+  [[ ! -s "$GRAPH" ]] && { log "❌ Graph file missing: $GRAPH"; exit $EXIT_FILE_UNREADABLE; }
+  [[ -n "$DDL_PRE" && ! -s "$DDL_PRE" ]] && { log "❌ DDL pre missing"; exit $EXIT_FILE_UNREADABLE; }
+  [[ -n "$DDL_POST" && ! -s "$DDL_POST" ]] && { log "❌ DDL post missing"; exit $EXIT_FILE_UNREADABLE; }
+  [[ "$RESET_DB" == true && "$CLEAN_DB" == true ]] && { log "❌ --reset-db and --clean-db are exclusive"; exit $EXIT_MUTUAL_EXCLUSIVE_CLEAN_RESET; }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -h|--help) usage; exit 0 ;;
-    -f|--file) FILE="$2"; shift 2 ;;
-    -u|--user) USER="$2"; shift 2 ;;
-    -p|--password) PASSWORD="$2"; shift 2 ;;
-    -a|--address) ADDRESS="$2"; shift 2 ;;
-    --test-con) TEST_CON=true; shift ;;
-    --clean-db) CLEAN_DB=true; shift ;;
-    --reset-db) RESET_DB=true; shift ;;
-    *) # passthrough unknown args
-      EXTRA_ARGS+=("$1"); shift ;;
-  esac
-done
+  [[ "$RESET_DB" == true ]] && resetdb
+  [[ "$CLEAN_DB" == true ]] && cleandb
+  [[ -n "$DDL_PRE" ]] && { log "📄 Executing DDL pre..."; cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]}" < "$DDL_PRE"; }
 
-# Enforce mutual exclusivity
-if [[ "$TEST_CON" == true && -n "${FILE:-}" ]]; then
-  log "❌ Options --test-con and -f are mutually exclusive."
-  usage $EXIT_MUTUAL_EXCLUSIVE_TEST_FILE
-fi
-
-# Enforce mutual exclusivity
-if [[ "$CLEAN_DB" == true && "$RESET_DB" == true ]]; then
-  log "❌ Options --clean-db and --reset-db are mutually exclusive."
-  usage $EXIT_MUTUAL_EXCLUSIVE_CLEAN_RESET
-fi
-
-# Base parameters
-if [[ -z "${USER:-}" || -z "${PASSWORD:-}" || -z "${ADDRESS:-}" ]]; then
-  usage $EXIT_MISSING_BASE_PARAMS
-fi
-
-# Version check
-check_version
-
-# ----------------------------------------------------------------------------
-# MAIN
-# ----------------------------------------------------------------------------
-
-# >>> Connection test
-
-if [[ "$TEST_CON" == true ]]; then
-  if cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]:-}"; then
-    log "✅ Connection successful"
-    exit $EXIT_SUCCESS
-  else
-    log "❌ Connection failed"
-    exit $EXIT_CONNECTION_FAILED
-  fi
-fi
-
-# >>> Slurp file content
-
-# Validate input file
-if [[ -z "${FILE:-}" ]]; then
-  log "Missing -f argument. Use --test-con for connection test."
-  exit $EXIT_MISSING_FILE_PARAM
-fi
-if [[ ! -s "$FILE" ]]; then
-  log "⚠️  Cypher file '$FILE' is empty or not readable."
-  exit $EXIT_FILE_UNREADABLE
-fi
-
-# Optional: reset or clean the database first
-if [[ "$RESET_DB" == true ]]; then
-  resetdb
-elif [[ "$CLEAN_DB" == true ]]; then
-  cleandb
-fi
-
-# Now import the AST as a single transaction
-tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose --fail-fast 2>&1
+  log "📦 Importing graph as transaction"
+  tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose --fail-fast "${EXTRA_ARGS[@]}"
 :begin
-$(cat "$FILE")
+$(cat "$GRAPH")
 :commit
 EOF
 
-EXIT_CODE=$?
-if [[ $EXIT_CODE -eq 0 ]]; then
-  log "✅ Import completed: '$FILE' executed as single transaction."
-  exit $EXIT_SUCCESS
-else
-  log "❌ Import failed for file '$FILE' (exit code $EXIT_CODE)"
-  exit $EXIT_IMPORT_FAILED
-  #exit $EXIT_CODE
-fi
+  [[ $? -eq 0 ]] || { log "❌ Import failed"; exit $EXIT_IMPORT_FAILED; }
 
+  [[ -n "$DDL_POST" ]] && { log "📄 Executing DDL post..."; cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]}" < "$DDL_POST"; }
+  log "✅ Slurp complete"
+}
+
+run_apply() {
+  [[ ! -s "$MIXED_FILE" ]] && { log "❌ Mixed file unreadable"; exit $EXIT_FILE_UNREADABLE; }
+  [[ "$RESET_DB" == true ]] && resetdb
+  [[ "$CLEAN_DB" == true ]] && cleandb
+  import_file_apoc "$MIXED_FILE"
+  log "✅ Apply complete"
+}
+
+run_testcon() {
+  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]}" \
+    && log "✅ Connection OK" && exit $EXIT_SUCCESS \
+    || { log "❌ Connection failed"; exit $EXIT_CONNECTION_FAILED; }
+}
+
+# -----------------------------------------------------------------------------
+# Arg Parsing
+# -----------------------------------------------------------------------------
+
+if [[ $# -eq 0 ]]; then usage; fi
+
+# Phase 1: global flags
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -u|--user) USER="$2"; shift 2 ;;
+    -p|--password) PASSWORD="$2"; shift 2 ;;
+    -a|--address) ADDRESS="$2"; shift 2 ;;
+    --clean-db) CLEAN_DB=true; shift ;;
+    --reset-db) RESET_DB=true; shift ;;
+    help|-h|--help) [[ $# -gt 1 ]] && sub_help "$2" || usage ;;
+    test-con|slurp|apply) CMD="$1"; shift; break ;;
+    *) EXTRA_ARGS+=("$1"); shift ;;
+  esac
+done
+
+# Phase 2: subcommand args and passthrough
+while [[ $# -gt 0 ]]; do
+  case "$CMD:$1" in
+    slurp:-g) GRAPH="$2"; shift 2 ;;
+    slurp:--ddl-pre) DDL_PRE="$2"; shift 2 ;;
+    slurp:--ddl-post) DDL_POST="$2"; shift 2 ;;
+    apply:-f) MIXED_FILE="$2"; shift 2 ;;
+    *) EXTRA_ARGS+=("$1"); shift ;;  # passthrough to cypher-shell
+  esac
+done
+
+# -----------------------------------------------------------------------------
+# Dispatch
+# -----------------------------------------------------------------------------
+
+[[ -z "$CMD" ]] && usage
+[[ -z "$USER" || -z "$PASSWORD" || -z "$ADDRESS" ]] && usage $EXIT_MISSING_BASE_PARAMS
+
+check_version
+
+case "$CMD" in
+  test-con) [[ "$CLEAN_DB" == true || "$RESET_DB" == true ]] && usage $EXIT_INVALID_DDL_USAGE; run_testcon ;;
+  slurp) run_slurp ;;
+  apply) run_apply ;;
+  *) log "❌ Unknown subcommand: $CMD"; usage $EXIT_INVALID_SUBCOMMAND ;;
+esac
