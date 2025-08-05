@@ -2,7 +2,7 @@
 set -uo pipefail
 > neoject.log
 
-VERSION="0.2.18"
+VERSION="0.2.20"
 
 # -----------------------------------------------------------------------------
 # Exit Codes
@@ -69,7 +69,8 @@ Subcommands:
   test-con                       Test Neo4j connectivity (no DB changes)
   slurp     -g <graph> [--ddl-pre <pre>] [--ddl-post <post>]
                                  Import graph with optional DDL pre/post
-  apply     -f <file>            Execute mixed Cypher file (DDL + data)
+  apply     -f <file> --import-dir <dir> [--clean-db|--reset-db]
+                                 Execute mixed Cypher file (DDL + data)
   help [<cmd>]                   Show general or subcommand-specific help
 
 Base Options:
@@ -113,8 +114,9 @@ Usage:
   neoject apply -f <mixed.cypher>
 
 Options:
-  --clean-db     Clean current database (nodes, constraints, indexes)
-  --reset-db     Drop and recreate the database
+  --import-dir <dir> ???
+  --clean-db         Clean current database (nodes, constraints, indexes)
+  --reset-db         Drop and recreate the database
 
 Notes:
   - File must contain semicolon-terminated Cypher statements
@@ -166,28 +168,24 @@ check_apoc() {
 
 check_apoc_conformity() {
   local file="$1"
-  local ok=true
+  local violations=0
+
+  log "🔍 Validating APOC conformity of file: $file"
 
   # --- Rule 1: No :begin/:commit ---
   if grep -iE '^\s*:begin|^\s*:commit' "$file" >/dev/null; then
-    log "❌ File must not contain :begin or :commit – Neoject wraps transaction automatically"
-    ok=false
+    log "❌ Rule violation: File must not contain :begin or :commit – Neoject wraps transaction automatically"
+    ((violations++))
   fi
 
-  # --- Rule 2: All statements must end with semicolon ---
-  if grep -Pv '^\s*(//|$)' "$file" | grep -vE ';[\s]*$' >/dev/null; then
-    log "❌ Not all Cypher statements are semicolon-terminated"
-    ok=false
-  fi
-
-  # --- Rule 3: Forbidden transaction control (manual rollback etc.) ---
+  # --- Rule 2: Forbidden transaction control ---
   if grep -iE '\bROLLBACK\b|\bCOMMIT\b' "$file" >/dev/null; then
-    log "❌ Detected transaction control (ROLLBACK/COMMIT) – not allowed with apply"
-    ok=false
+    log "❌ Rule violation: Detected transaction control (ROLLBACK/COMMIT) – not allowed with apply"
+    ((violations++))
   fi
 
-  if [[ "$ok" = false ]]; then
-    log "❌ Aborting due to Cypher conformity violation"
+  if [[ "$violations" -gt 0 ]]; then
+    log "❌ Aborting due to $violations Cypher conformity violation(s)"
     exit $EXIT_DB_IMPORT_FAILED
   fi
 }
@@ -206,19 +204,50 @@ check_mutually_exclusive_clean_reset() {
 # XXX User `-d` for `dbname`
 resetdb() {
   local dbname="neo4j"
-  log "⚠️  Resetting database '$dbname'..."
+  log "⚠️  Resetting database '$dbname'…"
 
-  local cmd="DROP DATABASE $dbname IF EXISTS; CREATE DATABASE $dbname;"
-  if ! echo "$cmd" | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" \
-      --database system --format verbose "${EXTRA_ARGS[@]:-}" | tee -a neoject.log; then
-    log "❌ Failed to reset database"
+  # write the reset script
+  local script
+  script=$(mktemp)
+  cat > "$script" <<EOF
+DROP DATABASE $dbname IF EXISTS;
+CREATE DATABASE $dbname;
+EOF
+
+  # run it on the system database
+  if ! cypher-shell \
+       -u "$USER" -p "$PASSWORD" \
+       -a "$ADDRESS" \
+       --database system \
+       -f "$script" \
+       --format verbose \
+       | tee -a neoject.log
+  then
+    log "❌ Failed to reset database via script"
+    rm -f "$script"
     exit $EXIT_DB_RESET_FAILED
   fi
+  rm -f "$script"
 
+  # wait up to 30s for it to report ONLINE
   for i in {1..30}; do
-    status=$(cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database system --format plain <<< \
-      "SHOW DATABASES YIELD name, currentStatus WHERE name = '$dbname' RETURN currentStatus;" | tail -n 1 | tr -d '"')
-    [[ "$status" == "online" ]] && { log "✅ Database is online."; return 0; }
+    # Query for currentStatus, strip header line and quotes/whitespace
+    status=$(cypher-shell \
+               -u "$USER" -p "$PASSWORD" \
+               -a "$ADDRESS" \
+               --database system \
+               --format plain \
+             <<< "SHOW DATABASE $dbname YIELD currentStatus;" \
+             | tail -n +2 \
+             | tr -d '"' \
+             | xargs)
+
+    if [[ "$status" == "online" ]]; then
+      log "✅ Database '$dbname' is online."
+      return 0
+    fi
+
+    log "⏳ Waiting for '$dbname' to come online (status='$status')… ($i/30)"
     sleep 1
   done
 
@@ -254,7 +283,6 @@ cleandb() {
 # -----------------------------------------------------------------------------
 
 import_file_apoc() {
-  # Explicit validation
   if [[ -z "$DBMS_IMPORT_DIR" ]]; then
     log "❌ Missing --import-dir for apply"
     echo "👉 Provide the path to Neo4j's import directory via --import-dir"
@@ -268,18 +296,12 @@ import_file_apoc() {
   fi
 
   local file="$1"
-
-  # Determine filename and copy target
   local abs_path
   abs_path=$(realpath "$file")
   local filename
   filename=$(basename "$abs_path")
+  local target="$DBMS_IMPORT_DIR/$filename"
 
-  # Define target inside Neo4j import directory
-  local neo4j_import_dir="/var/lib/neo4j/import"
-  local target="$neo4j_import_dir/$filename"
-
-  # Copy to import directory
   cp "$abs_path" "$target" || {
     log "❌ Failed to copy file to import directory: $target"
     exit $EXIT_DB_IMPORT_FAILED
@@ -305,7 +327,12 @@ import_file_shell() {
   local file="$1"
   log "📥 Importing Cypher via direct file: $file"
 
-  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" -f "$file" "${EXTRA_ARGS[@]:-}" 2>&1 \
+  cypher-shell \
+    -u "$USER" -p "$PASSWORD" \
+    -a "$ADDRESS" \
+    -f "$file" \
+    --format verbose \
+    "${EXTRA_ARGS[@]:-}" 2>&1 \
     | tee -a neoject.log
 
   local rc=${PIPESTATUS[0]}
@@ -350,6 +377,7 @@ run_apply() {
   [[ "$CLEAN_DB" == true ]] && cleandb
 
   import_file_apoc "$MIXED_FILE"
+  #import_file_shell "$MIXED_FILE"
 }
 
 run_testcon() {
@@ -392,18 +420,19 @@ done
 # Phase 2: subcommand-specific flags
 while [[ $# -gt 0 ]]; do
   case "$CMD:$1" in
+    apply:-f) MIXED_FILE="$2"; shift 2 ;;
+    apply:--import-dir) DBMS_IMPORT_DIR="$2"; shift 2 ;;
+    apply:help|apply:--help|apply:-h) using apply ;;
+
     slurp:-g) GRAPH="$2"; shift 2 ;;
     slurp:--ddl-pre) DDL_PRE="$2"; shift 2 ;;
     slurp:--ddl-post) DDL_POST="$2"; shift 2 ;;
-    apply:-f) MIXED_FILE="$2"; shift 2 ;;
+    slurp:help|slurp:--help|slurp:-h) using slurp ;;
 
     slurp:--clean-db|apply:--clean-db) CLEAN_DB=true; shift ;;
     slurp:--reset-db|apply:--reset-db) RESET_DB=true; shift ;;
 
-    slurp:help|slurp:--help|slurp:-h) using slurp ;;
-    apply:help|apply:--help|apply:-h) using apply ;;
     test-con:help|test-con:--help|test-con:-h) using test-con ;;
-
     -*)
       EXTRA_ARGS+=("$1"); shift ;;
     *)

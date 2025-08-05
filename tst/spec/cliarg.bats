@@ -5,6 +5,14 @@ setup() {
   neoject=./src/neoject.sh
 }
 
+# --- FILE_UNREADABLE=10
+
+@test "fails with unreadable file" {
+  run $neoject -u neo4j -p 12345678 -a neo4j://localhost:7687 apply -f ./tst/data/well-formed/valid/living.edge --import-dir /Users/normenmueller/Library/Application\ Support/neo4j-desktop/Application/Data/dbmss/dbms-823a39e0-cb6c-4dc4-a405-d2470a605346/import/
+  [ "$status" -eq 7 ]
+  [[ "$output" == *"Mixed file unreadable"* ]]
+}
+
 # --- MISSING_SUBCOMMAND=2
 
 @test "rejects missing subcommand" {
@@ -30,7 +38,7 @@ setup() {
 }
 
 @test "fails with only user" {
-  run $neoject -u neo4j test-con 
+  run $neoject -u neo4j test-con
   [ "$status" -eq 4 ]
   [[ "$output" == *"Usage"* ]]
 }
@@ -53,14 +61,6 @@ setup() {
   run $neoject -u neo4j -p 12345678 -a neo4j://invalid test-con
   [ "$status" -eq 5 ]  # connection failure
   [[ "$output" == *"Connection failed"* ]]
-}
-
-# --- FILE_UNREADABLE=7
-
-@test "fails with unreadable file" {
-  run $neoject -u neo4j -p 12345678 -a neo4j://localhost:7687 apply -f /Users/normenmueller/Library/CloudStorage/OneDrive-DeutscheBahn/Documents/Vocalizations/Analytics/IGA\ Inflow/data/pure/beam-25-07-2026.cypher 
-  [ "$status" -eq 7 ]
-  [[ "$output" == *"Mixed file unreadable"* ]]
 }
 
 # --- MUTUAL_EXCLUSIVE_CLEAN_RESET=11
