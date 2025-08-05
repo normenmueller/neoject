@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 > neoject.log
 
-VERSION="0.2.3"
+VERSION="0.2.18"
 
 # -----------------------------------------------------------------------------
 # Exit Codes
 # -----------------------------------------------------------------------------
 
 readonly EXIT_SUCCESS=0
-readonly EXIT_USAGE=1
-readonly EXIT_INVALID_SUBCOMMAND=2
-readonly EXIT_MISSING_BASE_PARAMS=3
-readonly EXIT_UNSUPPORTED_NEO4J_VERSION=4
-readonly EXIT_CONNECTION_FAILED=5
-readonly EXIT_FILE_UNREADABLE=6
-readonly EXIT_APOC_NOT_INSTALLED=7
-readonly EXIT_DB_TIMEOUT=8
-readonly EXIT_IMPORT_FAILED=9
-readonly EXIT_MUTUAL_EXCLUSIVE_CLEAN_RESET=10
-readonly EXIT_INVALID_DDL_USAGE=11
+
+readonly EXIT_CLI_USAGE=10
+readonly EXIT_CLI_FILE_UNREADABLE=11
+readonly EXIT_CLI_INVALID_DDL_USAGE=12
+readonly EXIT_CLI_MISSING_SUBCOMMAND=13
+readonly EXIT_CLI_INVALID_SUBCOMMAND=14
+readonly EXIT_CLI_MISSING_BASE_PARAMS=15
+readonly EXIT_CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET=16
+
+readonly EXIT_ENV_UNSUPPORTED_NEO4J_VERSION=100
+readonly EXIT_ENV_APOC_NOT_INSTALLED=101
+
+readonly EXIT_DB_TIMEOUT=1000
+readonly EXIT_DB_RESET_FAILED=1001
+readonly EXIT_DB_IMPORT_FAILED=1002
+readonly EXIT_DB_CONNECTION_FAILED=10003
 
 # -----------------------------------------------------------------------------
 # Global State
@@ -37,6 +42,7 @@ GRAPH=""
 DDL_PRE=""
 DDL_POST=""
 MIXED_FILE=""
+DBMS_IMPORT_DIR=""
 
 EXTRA_ARGS=()
 
@@ -54,7 +60,10 @@ usage() {
 © 2025 nemron
 
 Usage:
-  neoject.sh -u <user> -p <password> -a <address> [cypher-shell options] <subcommand> [args]
+  neoject.sh -u <user> -p <password> -a <address> <command> [args]
+
+⚠️  Note: All *global options* (-u/-p/-a etc.) must appear **before** the subcommand.
+         All *subcommand-specific options* must follow **after** the subcommand.
 
 Subcommands:
   test-con                       Test Neo4j connectivity (no DB changes)
@@ -66,7 +75,7 @@ Subcommands:
 Base Options:
   -u|--user <user>               Neo4j username (required)
   -p|--password <password>       Neo4j password (required)
-  -a|--address <addr>            e.g. bolt://localhost:7687 (required)
+  -a|--address <addr>            e.g. neo4j://localhost:7687 (required)
 
 Import Options (for slurp/apply only):
   --clean-db                     Remove all nodes, indexes, constraints
@@ -76,20 +85,22 @@ Notes:
   - Exactly one of: test-con | slurp | apply must be provided
   - --clean-db and --reset-db are mutually exclusive
   - --ddl-pre and --ddl-post are valid only with slurp
-  - All extra args passed after -a ... are forwarded to cypher-shell
 EOF
   exit ${1:-$EXIT_USAGE}
 }
 
-sub_help() {
+using() {
   case "$1" in
     slurp) cat <<EOF
 🧬 Help: slurp
+
 Usage:
   neoject slurp -g <graph.cypher> [--ddl-pre <pre.cypher>] [--ddl-post <post.cypher>]
+
 Options:
   --clean-db     Clean current database (nodes, constraints, indexes)
   --reset-db     Drop and recreate the database
+
 Notes:
   - All files must be readable
   - DDL files are executed outside of the transaction
@@ -97,11 +108,14 @@ EOF
       ;;
     apply) cat <<EOF
 🧬 Help: apply
+
 Usage:
   neoject apply -f <mixed.cypher>
+
 Options:
   --clean-db     Clean current database (nodes, constraints, indexes)
   --reset-db     Drop and recreate the database
+
 Notes:
   - File must contain semicolon-terminated Cypher statements
   - No :begin/:commit must appear in the file
@@ -110,8 +124,10 @@ EOF
       ;;
     test-con) cat <<EOF
 🧬 Help: test-con
+
 Usage:
   neoject test-con
+
 Description:
   Verifies connection/authentication with given -u/-p/-a parameters.
 EOF
@@ -122,7 +138,7 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
-# Validation & Environment
+# Validation
 # -----------------------------------------------------------------------------
 
 check_version() {
@@ -130,20 +146,74 @@ check_version() {
   version=$(cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< \
     "CALL dbms.components() YIELD versions RETURN versions[0];" | tail -n 1)
   version=${version//\"/}
-  log "ℹ️  Connected to Neo4j version $version"
-  [[ "$version" != 5* ]] && {
+
+  if [[ "$version" == 5* ]]; then
+    log "ℹ️  Adequate Neo4j version detected: $version"
+  else
     log "❌ Neoject requires Neo4j v5.x – detected: $version"
-    exit $EXIT_UNSUPPORTED_NEO4J_VERSION
-  }
+    exit $EXIT_ENV_UNSUPPORTED_NEO4J_VERSION
+  fi
 }
 
+check_apoc() {
+  if cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "RETURN apoc.version()" &>/dev/null; then
+    log "ℹ️  APOC detected"
+  else
+    log "❌ APOC not available"
+    exit $EXIT_ENV_APOC_NOT_INSTALLED
+  fi
+}
+
+check_apoc_conformity() {
+  local file="$1"
+  local ok=true
+
+  # --- Rule 1: No :begin/:commit ---
+  if grep -iE '^\s*:begin|^\s*:commit' "$file" >/dev/null; then
+    log "❌ File must not contain :begin or :commit – Neoject wraps transaction automatically"
+    ok=false
+  fi
+
+  # --- Rule 2: All statements must end with semicolon ---
+  if grep -Pv '^\s*(//|$)' "$file" | grep -vE ';[\s]*$' >/dev/null; then
+    log "❌ Not all Cypher statements are semicolon-terminated"
+    ok=false
+  fi
+
+  # --- Rule 3: Forbidden transaction control (manual rollback etc.) ---
+  if grep -iE '\bROLLBACK\b|\bCOMMIT\b' "$file" >/dev/null; then
+    log "❌ Detected transaction control (ROLLBACK/COMMIT) – not allowed with apply"
+    ok=false
+  fi
+
+  if [[ "$ok" = false ]]; then
+    log "❌ Aborting due to Cypher conformity violation"
+    exit $EXIT_DB_IMPORT_FAILED
+  fi
+}
+
+check_mutually_exclusive_clean_reset() {
+  if [[ "$RESET_DB" == "true" && "$CLEAN_DB" == "true" ]]; then
+    log "❌ --reset-db and --clean-db are exclusive"
+    exit $EXIT_CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Environment
+# -----------------------------------------------------------------------------
+
+# XXX User `-d` for `dbname`
 resetdb() {
   local dbname="neo4j"
   log "⚠️  Resetting database '$dbname'..."
-  {
-    echo "DROP DATABASE $dbname IF EXISTS;"
-    echo "CREATE DATABASE $dbname;"
-  } | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database system --format verbose "${EXTRA_ARGS[@]}" | tee -a neoject.log
+
+  local cmd="DROP DATABASE $dbname IF EXISTS; CREATE DATABASE $dbname;"
+  if ! echo "$cmd" | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" \
+      --database system --format verbose "${EXTRA_ARGS[@]:-}" | tee -a neoject.log; then
+    log "❌ Failed to reset database"
+    exit $EXIT_DB_RESET_FAILED
+  fi
 
   for i in {1..30}; do
     status=$(cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database system --format plain <<< \
@@ -151,15 +221,14 @@ resetdb() {
     [[ "$status" == "online" ]] && { log "✅ Database is online."; return 0; }
     sleep 1
   done
+
   log "❌ Timeout waiting for database to become available."
   exit $EXIT_DB_TIMEOUT
 }
 
+# XXX error handling!
 cleandb() {
   log "🧹 Cleaning database..."
-  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< "RETURN apoc.version()" &>/dev/null \
-    || { log "❌ APOC not available"; exit $EXIT_APOC_NOT_INSTALLED; }
-
   log "  ➤ Deleting nodes..."
   cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<< \
     'CALL apoc.periodic.iterate("MATCH (n) RETURN n", "DETACH DELETE n", {batchSize:10000}) YIELD batches RETURN batches;' \
@@ -185,59 +254,118 @@ cleandb() {
 # -----------------------------------------------------------------------------
 
 import_file_apoc() {
+  # Explicit validation
+  if [[ -z "$DBMS_IMPORT_DIR" ]]; then
+    log "❌ Missing --import-dir for apply"
+    echo "👉 Provide the path to Neo4j's import directory via --import-dir"
+    echo "🔧 For Neo4j Desktop, this must be set explicitly."
+    exit $EXIT_CLI_USAGE
+  fi
+
+  if [[ ! -d "$DBMS_IMPORT_DIR" || ! -w "$DBMS_IMPORT_DIR" ]]; then
+    log "❌ Invalid or unwritable --import-dir: $DBMS_IMPORT_DIR"
+    exit $EXIT_CLI_FILE_UNREADABLE
+  fi
+
   local file="$1"
+
+  # Determine filename and copy target
   local abs_path
   abs_path=$(realpath "$file")
-  local target="/tmp/$(basename "$abs_path")"
-  cp "$abs_path" "$target"
-  log "📥 Importing mixed Cypher via APOC: $target"
-  echo "CALL apoc.cypher.runFile(\"file://$target\", {useTx:false});" \
-    | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]}" \
+  local filename
+  filename=$(basename "$abs_path")
+
+  # Define target inside Neo4j import directory
+  local neo4j_import_dir="/var/lib/neo4j/import"
+  local target="$neo4j_import_dir/$filename"
+
+  # Copy to import directory
+  cp "$abs_path" "$target" || {
+    log "❌ Failed to copy file to import directory: $target"
+    exit $EXIT_DB_IMPORT_FAILED
+  }
+
+  log "📥 Importing via APOC: file://$filename"
+
+  echo "CALL apoc.cypher.runFile(\"file://$filename\", {useTx:false});" \
+    | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" 2>&1 \
     | tee -a neoject.log
+
+  local rc=${PIPESTATUS[1]}
+  if [[ $rc -ne 0 ]]; then
+    log "❌ APOC import failed (exit code $rc)"
+    exit $EXIT_DB_IMPORT_FAILED
+  fi
+
+  log "✅ Apply complete"
+  exit $EXIT_SUCCESS
+}
+
+import_file_shell() {
+  local file="$1"
+  log "📥 Importing Cypher via direct file: $file"
+
+  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" -f "$file" "${EXTRA_ARGS[@]:-}" 2>&1 \
+    | tee -a neoject.log
+
+  local rc=${PIPESTATUS[0]}
+  if [[ $rc -ne 0 ]]; then
+    log "❌ Direct file import failed (exit code $rc)"
+    exit $EXIT_IMPORT_FAILED
+  fi
+
+  log "✅ Apply complete"
 }
 
 run_slurp() {
-  [[ ! -s "$GRAPH" ]] && { log "❌ Graph file missing: $GRAPH"; exit $EXIT_FILE_UNREADABLE; }
-  [[ -n "$DDL_PRE" && ! -s "$DDL_PRE" ]] && { log "❌ DDL pre missing"; exit $EXIT_FILE_UNREADABLE; }
-  [[ -n "$DDL_POST" && ! -s "$DDL_POST" ]] && { log "❌ DDL post missing"; exit $EXIT_FILE_UNREADABLE; }
-  [[ "$RESET_DB" == true && "$CLEAN_DB" == true ]] && { log "❌ --reset-db and --clean-db are exclusive"; exit $EXIT_MUTUAL_EXCLUSIVE_CLEAN_RESET; }
+  [[ ! -s "$GRAPH" ]] && { log "❌ Graph file missing: $GRAPH"; exit $EXIT_CLI_FILE_UNREADABLE; }
+  [[ -n "$DDL_PRE" && ! -s "$DDL_PRE" ]] && { log "❌ DDL pre missing"; exit $EXIT_CLI_FILE_UNREADABLE; }
+  [[ -n "$DDL_POST" && ! -s "$DDL_POST" ]] && { log "❌ DDL post missing"; exit $EXIT_CLI_FILE_UNREADABLE; }
+  check_mutually_exclusive_clean_reset
 
   [[ "$RESET_DB" == true ]] && resetdb
   [[ "$CLEAN_DB" == true ]] && cleandb
-  [[ -n "$DDL_PRE" ]] && { log "📄 Executing DDL pre..."; cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]}" < "$DDL_PRE"; }
+  [[ -n "$DDL_PRE" ]] && { log "📄 Executing DDL pre..."; cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]:-}" < "$DDL_PRE"; }
 
   log "📦 Importing graph as transaction"
-  tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose --fail-fast "${EXTRA_ARGS[@]}"
+  tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format verbose --fail-fast "${EXTRA_ARGS[@]:-}"
 :begin
 $(cat "$GRAPH")
 :commit
 EOF
 
-  [[ $? -eq 0 ]] || { log "❌ Import failed"; exit $EXIT_IMPORT_FAILED; }
+  [[ $? -eq 0 ]] || { log "❌ Import failed"; exit $EXIT_DB_IMPORT_FAILED; }
 
-  [[ -n "$DDL_POST" ]] && { log "📄 Executing DDL post..."; cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]}" < "$DDL_POST"; }
+  [[ -n "$DDL_POST" ]] && { log "📄 Executing DDL post..."; cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]:-}" < "$DDL_POST"; }
   log "✅ Slurp complete"
 }
 
 run_apply() {
-  [[ ! -s "$MIXED_FILE" ]] && { log "❌ Mixed file unreadable"; exit $EXIT_FILE_UNREADABLE; }
+  [[ ! -s "$MIXED_FILE" ]] && { log "❌ Mixed file unreadable"; exit $EXIT_CLI_FILE_UNREADABLE; }
+
+  check_apoc_conformity "$MIXED_FILE"
+  check_mutually_exclusive_clean_reset
+
   [[ "$RESET_DB" == true ]] && resetdb
   [[ "$CLEAN_DB" == true ]] && cleandb
+
   import_file_apoc "$MIXED_FILE"
-  log "✅ Apply complete"
 }
 
 run_testcon() {
-  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]}" \
-    && log "✅ Connection OK" && exit $EXIT_SUCCESS \
-    || { log "❌ Connection failed"; exit $EXIT_CONNECTION_FAILED; }
+  if out=$(cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]:-}" 2>&1); then
+    log "✅ Connection OK"
+    exit $EXIT_SUCCESS
+  else
+    echo "$out" >&2
+    log "❌ Connection failed"
+    exit $EXIT_DB_CONNECTION_FAILED
+  fi
 }
 
 # -----------------------------------------------------------------------------
 # Arg Parsing
 # -----------------------------------------------------------------------------
-
-if [[ $# -eq 0 ]]; then usage; fi
 
 # Phase 1: global flags
 while [[ $# -gt 0 ]]; do
@@ -247,20 +375,41 @@ while [[ $# -gt 0 ]]; do
     -a|--address) ADDRESS="$2"; shift 2 ;;
     --clean-db) CLEAN_DB=true; shift ;;
     --reset-db) RESET_DB=true; shift ;;
-    help|-h|--help) [[ $# -gt 1 ]] && sub_help "$2" || usage ;;
-    test-con|slurp|apply) CMD="$1"; shift; break ;;
-    *) EXTRA_ARGS+=("$1"); shift ;;
+    help|-h|--help) [[ $# -gt 1 ]] && using "$2" || usage ;;
+    test-con|slurp|apply)
+      CMD="$1"; shift; break ;;
+    help|-h|--help)
+      [[ $# -gt 1 ]] && using "$2" || usage ;;
+    -*)
+      EXTRA_ARGS+=("$1"); shift ;;  # passthrough for cypher-shell
+    *)
+      log "❌ Unknown subcommand: $1"
+      echo "👉 Run 'neoject help' for usage." >&2
+      exit $EXIT_CLI_INVALID_SUBCOMMAND
   esac
 done
 
-# Phase 2: subcommand args and passthrough
+# Phase 2: subcommand-specific flags
 while [[ $# -gt 0 ]]; do
   case "$CMD:$1" in
     slurp:-g) GRAPH="$2"; shift 2 ;;
     slurp:--ddl-pre) DDL_PRE="$2"; shift 2 ;;
     slurp:--ddl-post) DDL_POST="$2"; shift 2 ;;
     apply:-f) MIXED_FILE="$2"; shift 2 ;;
-    *) EXTRA_ARGS+=("$1"); shift ;;  # passthrough to cypher-shell
+
+    slurp:--clean-db|apply:--clean-db) CLEAN_DB=true; shift ;;
+    slurp:--reset-db|apply:--reset-db) RESET_DB=true; shift ;;
+
+    slurp:help|slurp:--help|slurp:-h) using slurp ;;
+    apply:help|apply:--help|apply:-h) using apply ;;
+    test-con:help|test-con:--help|test-con:-h) using test-con ;;
+
+    -*)
+      EXTRA_ARGS+=("$1"); shift ;;
+    *)
+      log "❌ Fatal error: unknown argument for $CMD: $1"
+      echo "👉 Run 'neoject help' for usage." >&2
+      exit $EXIT_CLI_USAGE ;;
   esac
 done
 
@@ -268,14 +417,33 @@ done
 # Dispatch
 # -----------------------------------------------------------------------------
 
-[[ -z "$CMD" ]] && usage
-[[ -z "$USER" || -z "$PASSWORD" || -z "$ADDRESS" ]] && usage $EXIT_MISSING_BASE_PARAMS
+if [[ -z "$CMD" ]]; then
+  log "❌ Missing subcommand"
+  echo "👉 Run 'neoject help' for usage." >&2
+  exit $EXIT_CLI_MISSING_SUBCOMMAND
+fi
 
-check_version
+[[ -z "$USER" || -z "$PASSWORD" || -z "$ADDRESS" ]] && usage $EXIT_CLI_MISSING_BASE_PARAMS
 
 case "$CMD" in
-  test-con) [[ "$CLEAN_DB" == true || "$RESET_DB" == true ]] && usage $EXIT_INVALID_DDL_USAGE; run_testcon ;;
-  slurp) run_slurp ;;
-  apply) run_apply ;;
-  *) log "❌ Unknown subcommand: $CMD"; usage $EXIT_INVALID_SUBCOMMAND ;;
+  test-con)
+    [[ "$CLEAN_DB" == true || "$RESET_DB" == true ]] && usage $EXIT_CLI_INVALID_DDL_USAGE
+    run_testcon
+    ;;
+  slurp)
+    check_version
+    check_apoc
+    run_slurp
+    ;;
+  apply)
+    check_version
+    check_apoc
+    run_apply
+    ;;
+  *)
+    log "❌ Unhandled subcommand: $CMD"
+    echo "👉 Run 'neoject help' for usage." >&2
+    exit $EXIT_CLI_INVALID_SUBCOMMAND
+    ;;
 esac
+

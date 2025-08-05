@@ -1,21 +1,3 @@
-# Todos
-
-## Neo4j v5!
-
-Auf Grund von `--clean-db`:
-
-- SHOW INDEXES und SHOW CONSTRAINTS in der jetzigen Syntax nutzt
-- `db.dropIndex(name)` oder `db.dropConstraint(name)`
-
-## `neo4j.conf` pre-requisites
-
-Damit `--clean-db` funktioniert:
-
-````
-dbms.security.procedures.unrestricted=apoc.*
-dbms.security.procedures.allowlist=apoc.*
-````
-
 # Neoject
 
 > **Neoject** — A lean Cypher injector
