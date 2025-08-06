@@ -240,29 +240,32 @@ EOF
 
 cleandb() {
   log "🧹 Cleaning database '$DBNAME'…"
+
   log "  ➤ Deleting nodes via APOC"
-  if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format plain <<<'CALL apoc.periodic.iterate("MATCH (n) RETURN n","DETACH DELETE n",{batchSize:10000}) YIELD batches RETURN batches;' \
-         | tee -a neoject.log; then
+  if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format plain <<<'CALL apoc.periodic.iterate("MATCH (n) RETURN n", "DETACH DELETE n", {batchSize:10000}) YIELD batches RETURN batches;' \
+        | tee -a neoject.log; then
     log "❌ Failed to delete nodes via APOC"
     exit $EXIT_DB_IMPORT_FAILED
   fi
 
   log "  ➤ Dropping constraints"
-  if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format plain <<<'SHOW CONSTRAINTS YIELD name RETURN name;' \
-         | tail -n+2 | while read -r c; do
-             [[ -n "$c" ]] && cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" <<<"CALL db.dropConstraint('${c//\"/}');"
-           done \
-         | tee -a neoject.log; then
+  if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format plain <<<"SHOW CONSTRAINTS YIELD name RETURN name;" \
+        | tail -n+2 \
+        | while read -r c; do
+            [[ -n "$c" ]] && cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" <<<"DROP CONSTRAINT \`${c//\"/}\` IF EXISTS;"
+          done \
+        | tee -a neoject.log; then
     log "❌ Failed to drop constraints"
     exit $EXIT_DB_IMPORT_FAILED
   fi
 
   log "  ➤ Dropping indexes"
-  if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format plain <<<'SHOW INDEXES YIELD name RETURN name;' \
-         | tail -n+2 | while read -r i; do
-             [[ -n "$i" ]] && cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" <<<"CALL db.dropIndex('${i//\"/}');"
-           done \
-         | tee -a neoject.log; then
+  if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format plain <<<"SHOW INDEXES YIELD name RETURN name;" \
+        | tail -n+2 \
+        | while read -r i; do
+            [[ -n "$i" ]] && cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" <<<"DROP INDEX \`${i//\"/}\` IF EXISTS;"
+          done \
+        | tee -a neoject.log; then
     log "❌ Failed to drop indexes"
     exit $EXIT_DB_IMPORT_FAILED
   fi
