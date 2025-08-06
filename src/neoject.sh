@@ -2,7 +2,7 @@
 set -euo pipefail
 > neoject.log
 
-VERSION="0.2.29"
+VERSION="0.2.30"
 
 # -----------------------------------------------------------------------------
 # Exit Codes
@@ -179,7 +179,8 @@ check_db_version() {
 # Utilities
 # -----------------------------------------------------------------------------
 
-import_mixed_file() {
+# import mixed file
+inject() {
   local file="$1"
   log "📥 Injecting mixed Cypher via file: $file"
 
@@ -349,7 +350,9 @@ run_inject() {
   $RESET_DB && resetdb
   $CLEAN_DB && cleandb
 
-  import_mixed_file "$MIXED_FILE"
+  inject "$MIXED_FILE"
+
+  exit $EXIT_SUCCESS
 }
 
 # -----------------------------------------------------------------------------
