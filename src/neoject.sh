@@ -2,7 +2,7 @@
 set -euo pipefail
 > neoject.log
 
-VERSION="0.2.30"
+VERSION="0.2.0"
 
 # -----------------------------------------------------------------------------
 # Exit Codes
@@ -19,7 +19,7 @@ readonly EXIT_CLI_INVALID_DDL_USAGE=15
 readonly EXIT_CLI_INVALID_SUBCOMMAND_FLAG=16
 readonly EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD=17
 readonly EXIT_CLI_FILE_UNREADABLE=18
-readonly EXIT_CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET=19
+#readonly EXIT_CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET=19
 
 readonly EXIT_ENV_UNSUPPORTED_NEO4J_VERSION=1000
 readonly EXIT_ENV_APOC_NOT_INSTALLED=1001
@@ -67,33 +67,31 @@ Usage:
          Subcommand-specific options come **after** the subcommand.
 
 Subcommands:
+  inject
+    ( -g <graph.cypher> [--ddl-pre <pre.cypher>] [--ddl-post <post.cypher>]
+    | -f <mixed.cypher>
+    ) [--clean-db] [--reset-db]
+
   test-con
       Test Neo4j connectivity (no DB changes)
 
-  combine -g <graph.cypher> [--ddl-pre <pre.cypher>] [--ddl-post <post.cypher>] [--clean-db] [--reset-db]
-      Execute:
-        1) optional RESET or CLEAN on $DBNAME
-        2) optional DDL-PRE
-        3) GRAPH (as DML only) in one transaction
-        4) optional DDL-POST
+  clean-db
+      Wipes all data (nodes, constraints, indexes) from $DBNAME
+      using APOC
 
-  inject -f <mixed.cypher> [--clean-db] [--reset-db]
-      Execute:
-        1) optional RESET or CLEAN on $DBNAME
-        2) execute mixed Cypher file (DDL + DML) via cypher-shell -f
+  reset-db
+      Drops and recreates database $DBNAME
+      (requires system access!)
 
 Base Options:
-  -u|--user     <user>     Neo4j username (required)
-  -p|--password <pass>     Neo4j password (required)
-  -a|--address  <addr>     Bolt URI e.g. neo4j://localhost:7687 (required)
-  -d|--database <db>       Database to use (default: neo4j)
+  -u|--user     <user>  Neo4j username (required)
+  -p|--password <pass>  Neo4j password (required)
+  -a|--address  <addr>  Bolt URI e.g. {bolt, neo4j}://localhost:7687 (required)
+  -d|--database <db>    Database to use (default: neo4j)
 
 Notes:
-  - Exactly one of test-con | combine | inject must be provided
-  - combine requires -g <graph.cypher>
-  - inject requires -f <mixed.cypher>
-  - combine/inject allow for cleaning/resetting DB in advance,
-    --clean-db and --reset-db are mutually exclusive
+  - Exactly one sub-command must be provided
+  - --clean-db and --reset-db are mutually exclusive
 EOF
   exit ${1:-$EXIT_CLI_USAGE}
 }
@@ -103,44 +101,77 @@ using() {
     test-con)
       cat <<EOF
 🧬 Help: test-con
+
 Usage:
   neoject.sh test-con
+
 Description:
   Verifies connectivity/authentication with given -u/-p/-a[-d] parameters.
-EOF
-      exit $EXIT_SUCCESS
-      ;;
-    combine)
-      cat <<EOF
-🧬 Help: combine
-Usage:
-  neoject.sh combine -g <graph.cypher> [--ddl-pre <pre.cypher>] [--ddl-post <post.cypher>] [--clean-db] [--reset-db]
-Description:
-  Builds and runs:
-    [DDL-PRE]      (if provided)
-    [DML GRAPH]    (inside one explicit transaction)
-    [DDL-POST]     (if provided)
-  Supports optional database reset/clean before import.
 EOF
       exit $EXIT_SUCCESS
       ;;
     inject)
       cat <<EOF
 🧬 Help: inject
+
+# Monolithic
+
 Usage:
   neoject.sh inject -f <mixed.cypher> [--clean-db] [--reset-db]
+
 Description:
-  Executes a mixed Cypher file (DDL + DML) via cypher-shell -f.
-  Each statement runs in its own implicit transaction.
-  Supports optional database reset/clean before import.
+  Monolithic execution of a mixed Cypher file (DDL + DML) via cypher-shell -f.
+  Each statement runs in its own implicit transaction. Supports optional
+  database reset/clean before import.
+
+# Modular
+
+Usage:
+  neoject.sh inject -g <graph.cypher> [--ddl-pre <pre.cypher>]
+    [--ddl-post <post.cypher>] [--clean-db] [--reset-db]
+
+Description:
+  Modular exection of DDL pre-statements (if provided), the DML graph
+  (executed inside *one* explicit transaction), and DDL post-statements
+  (if provided). Supports optional database reset/clean before import.
+EOF
+      exit $EXIT_SUCCESS
+      ;;
+    clean-db)
+      cat <<EOF
+🧬 Help: clean-db
+
+Usage:
+  neoject.sh clean-db
+
+Description:
+  Removes all nodes, constraints and indexes from the target database
+  using APOC. Leaves database itself intact.
+
+Requires:
+  - ⚠️ APOC plugin installed
+  - WRITE permissions
+EOF
+      exit $EXIT_SUCCESS
+      ;;
+    reset-db)
+      cat <<EOF
+🧬 Help: reset-db
+
+Usage:
+  neoject.sh reset-db
+
+Description:
+
+  Drops and recreates the database defined via -d (default: neo4j).
+  ⚠️ This is destructive: all data and schema will be lost!
 EOF
       exit $EXIT_SUCCESS
       ;;
     *)
-      usage
+      usage $EXIT_SUCCESS
       ;;
   esac
-  exit $EXIT_SUCCESS
 }
 
 # -----------------------------------------------------------------------------
@@ -150,16 +181,7 @@ EOF
 check_cli_clsrst() {
   if [[ "$RESET_DB" == "true" && "$CLEAN_DB" == "true" ]]; then
     log "❌ --reset-db and --clean-db are exclusive"
-    exit $EXIT_CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET
-  fi
-}
-
-check_db_apocext() {
-  if cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<<"RETURN apoc.version();" &>/dev/null; then
-    log "ℹ️  APOC detected"
-  else
-    log "❌ APOC not available"
-    exit $EXIT_ENV_APOC_NOT_INSTALLED
+    exit $EXIT_CLI_USAGE
   fi
 }
 
@@ -175,14 +197,22 @@ check_db_version() {
   fi
 }
 
+check_db_apocext() {
+  if cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<<"RETURN apoc.version();" &>/dev/null; then
+    log "ℹ️  APOC detected"
+  else
+    log "❌ APOC not available"
+    exit $EXIT_ENV_APOC_NOT_INSTALLED
+  fi
+}
+
 # -----------------------------------------------------------------------------
-# Utilities
+# Low level actions
 # -----------------------------------------------------------------------------
 
-# import mixed file
-inject() {
+# inject mixed file
+injmxf() {
   local file="$1"
-  log "📥 Injecting mixed Cypher via file: $file"
 
   cypher-shell \
     -u "$USER" \
@@ -197,17 +227,44 @@ inject() {
     log "❌ Inject failed (exit code $rc)"
     exit $EXIT_DB_IMPORT_FAILED
   fi
-
-  log "✅ Inject complete"
 }
 
-# Environment
-# -----------------------------------------------------------------------------
+# combine components
+cmbcmp() {
+  if [[ -n "$DDL_PRE" ]]; then
+    log "📄 Executing DDL PRE"
+    if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" <"$DDL_PRE"; then
+      log "❌ DDL-PRE failed"
+      exit $EXIT_DB_IMPORT_FAILED
+    fi
+  fi
 
-resetdb() {
-  log "⚠️  Resetting database '$DBNAME'…"
+  log "📦 Importing DML graph as one transaction"
+  tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose --fail-fast 2>&1
+:begin
+$(cat "$GRAPH")
+:commit
+EOF
+
+  if [[ ${PIPESTATUS[1]} -ne 0 ]]; then
+    log "❌ Graph import failed"
+    exit $EXIT_DB_IMPORT_FAILED
+  fi
+
+  if [[ -n "$DDL_POST" ]]; then
+    log "📄 Executing DDL POST"
+    if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" <"$DDL_POST"; then
+      log "❌ DDL-POST failed"
+      exit $EXIT_DB_IMPORT_FAILED
+    fi
+  fi
+}
+
+# reset db
+rstdb() {
   local script
   script=$(mktemp)
+
   cat >"$script" <<EOF
 DROP DATABASE $DBNAME IF EXISTS;
 CREATE DATABASE $DBNAME;
@@ -227,10 +284,11 @@ EOF
                <<<"SHOW DATABASE $DBNAME YIELD currentStatus;" \
              | tail -n+2 | tr -d '"' | xargs)
     if [[ "$status" == "online" ]]; then
-      log "✅ Database '$DBNAME' is online."
+      log "ℹ️  Database '$DBNAME' is online."
       return 0
     fi
     log "⏳ Waiting for '$DBNAME' to come online (status='$status')… ($i/30)"
+    return 0
     sleep 1
   done
 
@@ -238,9 +296,8 @@ EOF
   exit $EXIT_DB_TIMEOUT
 }
 
-cleandb() {
-  log "🧹 Cleaning database '$DBNAME'…"
-
+# clean db
+clsdb() {
   log "  ➤ Deleting nodes via APOC"
   if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format plain <<<'CALL apoc.periodic.iterate("MATCH (n) RETURN n", "DETACH DELETE n", {batchSize:10000}) YIELD batches RETURN batches;' \
         | tee -a neoject.log; then
@@ -269,15 +326,13 @@ cleandb() {
     log "❌ Failed to drop indexes"
     exit $EXIT_DB_IMPORT_FAILED
   fi
-
-  log "✅ Database cleaned"
 }
 
 # -----------------------------------------------------------------------------
-# Core Commands
+# Top level commands
 # -----------------------------------------------------------------------------
 
-run_testcon() {
+test-con() {
   if cypher-shell \
        -u "$USER" \
        -p "$PASSWORD" \
@@ -296,64 +351,58 @@ run_testcon() {
   fi
 }
 
-run_combine() {
+inject-modu() {
   [[ ! -s "$GRAPH" ]]                      && { log "❌ Graph file missing: $GRAPH"; exit $EXIT_CLI_FILE_UNREADABLE; }
   [[ -n "$DDL_PRE" && ! -s "$DDL_PRE" ]]   && { log "❌ DDL pre missing";  exit $EXIT_CLI_FILE_UNREADABLE; }
   [[ -n "$DDL_POST" && ! -s "$DDL_POST" ]] && { log "❌ DDL post missing"; exit $EXIT_CLI_FILE_UNREADABLE; }
+
+  log "📥 Merging DDL pre, DML graph, and DDL post"
 
   check_cli_clsrst
   check_db_version
   check_db_apocext
 
-  $RESET_DB && resetdb
-  $CLEAN_DB && cleandb
+  $RESET_DB && rstdb
+  $CLEAN_DB && clsdb
 
-  if [[ -n "$DDL_PRE" ]]; then
-    log "📄 Executing DDL PRE"
-    if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" <"$DDL_PRE"; then
-      log "❌ DDL-PRE failed"
-      exit $EXIT_DB_IMPORT_FAILED
-    fi
-  fi
+  cmbcmp
 
-  log "📦 Importing DML graph as one transaction"
-  tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose --fail-fast 2>&1
-:begin
-$(cat "$GRAPH")
-:commit
-EOF
-
-  if [[ ${PIPESTATUS[1]} -ne 0 ]]; then
-    log "❌ Graph import failed"
-    exit $EXIT_DB_IMPORT_FAILED
-  fi
-
-  if [[ -n "$DDL_POST" ]]; then
-    log "📄 Executing DDL POST"
-    if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" <"$DDL_POST"; then
-      log "❌ DDL-POST failed"
-      exit $EXIT_DB_IMPORT_FAILED
-    fi
-  fi
-
-  log "✅ Combine complete"
+  log "✅ Merge complete"
+  exit $EXIT_SUCCESS
 }
 
-run_inject() {
+inject_mono() {
   if [[ ! -s "$MIXED_FILE" ]]; then
     log "❌ Mixed file missing: $MIXED_FILE"
     exit $EXIT_CLI_FILE_UNREADABLE
   fi
 
+  log "📥 Injecting mixed Cypher via file: $MIXED_FILE"
+
   check_cli_clsrst
   check_db_version
   check_db_apocext
 
-  $RESET_DB && resetdb
-  $CLEAN_DB && cleandb
+  $RESET_DB && rstdb
+  $CLEAN_DB && clsdb
 
-  inject "$MIXED_FILE"
+  injmxf "$MIXED_FILE"
 
+  log "✅ Injection complete"
+  exit $EXIT_SUCCESS
+}
+
+clean-db() {
+  log "🧹 Cleaning database '$DBNAME'…"
+  check_db_version; clsdb
+  log "✅ Database cleaning completed"
+  exit $EXIT_SUCCESS
+}
+
+reset-db() {
+  log "⚠️  Resetting database '$DBNAME'…"
+  check_db_version; rstdb
+  log "✅ Database reset completed"
   exit $EXIT_SUCCESS
 }
 
@@ -364,12 +413,15 @@ run_inject() {
 # Phase 1: global flags
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -u|--user)               USER="$2";     shift 2 ;;
-    -p|--password)           PASSWORD="$2"; shift 2 ;;
-    -a|--address)            ADDRESS="$2";  shift 2 ;;
-    -d|--database)           DBNAME="$2";   shift 2 ;;
-    test-con|combine|inject) CMD="$1"; shift; break ;;
-    -h|--help)               usage ;;
+    -u|--user)      USER="$2";     shift 2 ;;
+    -p|--password)  PASSWORD="$2"; shift 2 ;;
+    -a|--address)   ADDRESS="$2";  shift 2 ;;
+    -d|--database)  DBNAME="$2";   shift 2 ;;
+    test-con|inject|clean-db|reset-db)
+      CMD="$1"; shift; break ;;
+    -h|--help)
+      usage
+      ;;
     -*)
       echo "❌ Invalid global flag: $1";
       echo "👉 Run 'neoject help' for usage." >&2
@@ -383,7 +435,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Check for base params
+# Base validation
 if [[ -z "$USER" || -z "$PASSWORD" || -z "$ADDRESS" ]]; then
   echo "❌ Missing required global options: -u <user>, -p <password> and -a <address> must all be provided" >&2
   echo "👉 Run 'neoject help' for usage." >&2
@@ -416,31 +468,12 @@ case "$CMD" in
       esac
     done
     ;;
-  combine)
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        -g)           GRAPH="$2";    shift 2 ;;
-        --ddl-pre)    DDL_PRE="$2";  shift 2 ;;
-        --ddl-post)   DDL_POST="$2"; shift 2 ;;
-        --clean-db)   CLEAN_DB=true; shift   ;;
-        --reset-db)   RESET_DB=true; shift   ;;
-        -h|--help)    using combine  ;;
-        -*)
-          echo "❌ Invalid combine flag: $1"
-          echo "👉 Run 'neoject help' for usage." >&2
-          exit $EXIT_CLI_INVALID_SUBCOMMAND_FLAG
-          ;;
-        *)
-          echo "❌ Invalid combine sub-command: $1"
-          echo "👉 Run 'neoject help' for usage." >&2
-          exit $EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD
-          ;;
-      esac
-    done
-    ;;
   inject)
     while [[ $# -gt 0 ]]; do
       case "$1" in
+        -g)           GRAPH="$2";      shift 2 ;;
+        --ddl-pre)    DDL_PRE="$2";    shift 2 ;;
+        --ddl-post)   DDL_POST="$2";   shift 2 ;;
         -f)           MIXED_FILE="$2"; shift 2 ;;
         --clean-db)   CLEAN_DB=true;   shift   ;;
         --reset-db)   RESET_DB=true;   shift   ;;
@@ -454,6 +487,44 @@ case "$CMD" in
           echo "❌ Invalid inject sub-command: $1"
           echo "👉 Run 'neoject help' for usage." >&2
           exit $EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD
+          ;;
+      esac
+    done
+    # Validate mutual exclusivity
+    if [[ -n "$GRAPH" && -n "$MIXED_FILE" ]]; then
+      echo "❌ Options -g and -f are mutually exclusive"
+      exit $EXIT_CLI_USAGE
+    fi
+    if [[ -z "$GRAPH" && -z "$MIXED_FILE" ]]; then
+      echo "❌ Either -g or -f must be provided"
+      exit $EXIT_CLI_USAGE
+    fi
+    # Validate --ddl-pre and --ddl-post only valid with -g
+    if [[ -n "$MIXED_FILE" && ( -n "$DDL_PRE" || -n "$DDL_POST" ) ]]; then
+      echo "❌ --ddl-pre and --ddl-post can only be used with -g <graph.cypher>"
+      exit $EXIT_CLI_USAGE
+    fi
+    ;;
+  clean-db)
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -h|--help) using clean-db ;;
+        *)
+          echo "❌ clean-db takes no arguments"
+          echo "👉 Run 'neoject help reset-db' for usage." >&2
+          exit $EXIT_CLI_USAGE
+          ;;
+      esac
+    done
+    ;;
+  reset-db)
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -h|--help) using reset-db ;;
+        *)
+          echo "❌ reset-db takes no arguments"
+          echo "👉 Run 'neoject help reset-db' for usage." >&2
+          exit $EXIT_CLI_USAGE
           ;;
       esac
     done
@@ -471,11 +542,19 @@ esac
 
 case "$CMD" in
   test-con)
-    #$RESET_DB && usage $EXIT_CLI_INVALID_DDL_USAGE
-    #$CLEAN_DB && usage $EXIT_CLI_INVALID_DDL_USAGE
-    run_testcon
+    $RESET_DB && usage $EXIT_CLI_INVALID_DDL_USAGE
+    $CLEAN_DB && usage $EXIT_CLI_INVALID_DDL_USAGE
+    test-con
     ;;
-  combine) run_combine ;;
-  inject)  run_inject  ;;
+  inject)
+    [[ -n "$GRAPH" ]] && inject-modu
+    [[ -n "$MIXED_FILE" ]] && inject_mono
+    ;;
+  clean-db)
+    clean-db
+    ;;
+  reset-db)
+    reset-db
+    ;;
 esac
 
