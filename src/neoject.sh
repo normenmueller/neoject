@@ -2,7 +2,7 @@
 set -euo pipefail
 > neoject.log
 
-VERSION="0.2.27"
+VERSION="0.2.28"
 
 # -----------------------------------------------------------------------------
 # Exit Codes
@@ -177,6 +177,31 @@ check_db_version() {
 }
 
 # -----------------------------------------------------------------------------
+# Utilities
+# -----------------------------------------------------------------------------
+
+import_mixed_file() {
+  local file="$1"
+  log "📥 Injecting mixed Cypher via file: $file"
+
+  cypher-shell \
+    -u "$USER" \
+    -p "$PASSWORD" \
+    -a "$ADDRESS" \
+    -d "$DBNAME" \
+    --format verbose \
+    "${EXTRA_ARGS[@]:-}" \
+    -f "$file" 2>&1 | tee -a neoject.log
+
+  local rc=${PIPESTATUS[0]}
+  if [[ $rc -ne 0 ]]; then
+    log "❌ Inject failed (exit code $rc)"
+    exit $EXIT_DB_IMPORT_FAILED
+  fi
+
+  log "✅ Inject complete"
+}
+
 # Environment
 # -----------------------------------------------------------------------------
 
@@ -315,16 +340,7 @@ run_inject() {
   $RESET_DB && resetdb
   $CLEAN_DB && cleandb
 
-  log "📥 Injecting mixed Cypher via cypher-shell: $MIXED_FILE"
-  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose "${EXTRA_ARGS[@]:-}" -f "$MIXED_FILE" 2>&1 \
-    | tee -a neoject.log
-  local rc=${PIPESTATUS[0]}
-  if [[ $rc -ne 0 ]]; then
-    log "❌ inject failed (exit code $rc)"
-    exit $EXIT_DB_IMPORT_FAILED
-  fi
-
-  log "✅ inject complete"
+  import_mixed_file "$MIXED_FILE"
 }
 
 # -----------------------------------------------------------------------------
