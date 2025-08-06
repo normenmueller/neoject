@@ -317,7 +317,6 @@ run_combine() {
   fi
 
   log "📦 Importing DML graph as one transaction"
-  # XXX
   tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose --fail-fast 2>&1
 :begin
 $(cat "$GRAPH")
@@ -337,7 +336,7 @@ EOF
     fi
   fi
 
-  log "✅ combine complete"
+  log "✅ Combine complete"
 }
 
 run_inject() {

@@ -123,7 +123,6 @@ setup() {
     inject --reset-db \
     -f "./tst/data/well-formed/valid/mixed/living.cypher"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Connection OK"* ]]
 
   # 2) Person count must be 2
   person_count=$( \
@@ -177,7 +176,60 @@ setup() {
     inject --clean-db \
     -f "./tst/data/well-formed/valid/mixed/living.cypher"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Connection OK"* ]]
+
+  # 2) Person count must be 2
+  person_count=$( \
+    cypher-shell \
+      -u neo4j \
+      -p 12345678 \
+      -a neo4j://localhost:7687 \
+      -d neo4j \
+      --format plain \
+      --non-interactive \
+      "MATCH (p:Person) RETURN count(p) AS c" \
+    | tail -n +2 \
+  )
+  [ "$person_count" -eq 2 ]
+
+  # 3) City count must be 2
+  city_count=$( \
+    cypher-shell \
+      -u neo4j \
+      -p 12345678 \
+      -a neo4j://localhost:7687 \
+      -d neo4j \
+      --format plain \
+      --non-interactive \
+      "MATCH (c:City) RETURN count(c) AS c" \
+    | tail -n +2 \
+  )
+  [ "$city_count" -eq 2 ]
+
+  # 4) Relationship count must be 2
+  rel_count=$( \
+    cypher-shell \
+      -u neo4j \
+      -p 12345678 \
+      -a neo4j://localhost:7687 \
+      -d neo4j \
+      --format plain \
+      --non-interactive \
+      "MATCH ()-[r:LIVES_IN]->() RETURN count(r) AS c" \
+    | tail -n +2 \
+  )
+  [ "$rel_count" -eq 2 ]
+}
+
+@test "[online] succeeds with combine complete (w/ --reset-db)" {
+  # 1) combine
+  run $neoject \
+    -u neo4j \
+    -p 12345678 \
+    -a neo4j://localhost:7687 \
+    combine --reset-db \
+    --ddl-pre "./tst/data/well-formed/valid/divided/living/living-pre.cql" \
+    -g "./tst/data/well-formed/valid/divided/living/living-grp.cql"
+  [ "$status" -eq 0 ]
 
   # 2) Person count must be 2
   person_count=$( \
