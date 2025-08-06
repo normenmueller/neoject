@@ -274,7 +274,16 @@ cleandb() {
 # -----------------------------------------------------------------------------
 
 run_testcon() {
-  if cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" >/dev/null; then
+  if cypher-shell \
+       -u "$USER" \
+       -p "$PASSWORD" \
+       -a "$ADDRESS" \
+       -d "$DBNAME" \
+       --format plain \
+       --non-interactive \
+       "RETURN 1" \
+       &>/dev/null
+  then
     log "✅ Connection OK"
     exit $EXIT_SUCCESS
   else

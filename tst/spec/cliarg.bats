@@ -57,25 +57,34 @@ setup() {
   [[ "$output" == *"test-con does not accept --clean-db/--reset-db"* ]]
 }
 
-# --- EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD=16
+# --- EXIT_CLI_INVALID_SUBCOMMAND_FLAG=16
 
 @test "fails with unknown test-con flag" {
-  run $neoject -u user -p secret -a neo4j://localhost:7687 test-con foo
+  run $neoject -u user -p secret -a neo4j://localhost:7687 test-con --foo
   [ "$status" -eq 16 ]
+  [[ "$output" == *"Invalid test-con flag: --foo"* ]]
+}
+
+
+# --- EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD=17
+
+@test "fails with unknown test-con sub-command" {
+  run $neoject -u user -p secret -a neo4j://localhost:7687 test-con foo
+  [ "$status" -eq 17 ]
   [[ "$output" == *"Invalid test-con sub-command: foo"* ]]
 }
 
-# --- CLI_FILE_UNREADABLE=17
+# --- CLI_FILE_UNREADABLE=18
 
 @test "fails with unreadable file (inject)" {
   run $neoject \
     -u neo4j -p 12345678 -a neo4j://localhost:7687 \
     inject -f ./tst/data/well-formed/valid/living.edge
-  [ "$status" -eq 17 ]
+  [ "$status" -eq 18 ]
   [[ "$output" == *"Mixed file missing"* ]]
 }
 
-# --- CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET=18
+# --- CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET=19
 
 @test "fails with mutual exclusiveness of reset and clean (inject)" {
   setup_file="/tmp/neoject_test.cypher"
@@ -86,7 +95,7 @@ setup() {
     inject -f "$setup_file" \
     --reset-db --clean-db
 
-  [ "$status" -eq 18 ]
+  [ "$status" -eq 19 ]
   [[ "$output" == *"--reset-db and --clean-db are exclusive"* ]]
 }
 
