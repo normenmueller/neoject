@@ -2,61 +2,11 @@
 title: Roadmap
 ...
 
-# Diskussion
-
-Lass uns nun zu `import_file_apoc` zurückkehren. Das Ziel ist, dass
-
-````
-> ./src/neoject.sh -u neo4j -p 12345678 -a neo4j://localhost:7687 apply -f ./tst/data/well-formed/valid/living.cql
-````
-
-im Endeffekt so funktioniert wie:
-
-````
-> echo 'CALL apoc.cypher.runFile("file://living.cql", {useTx:false});' \
-  | cypher-shell -u neo4j -p 12345678 -a neo4j://localhost:7687
-````
-
-Zur Sicherheit hier der aktuelle Stand:
-
-````
-...
-````
-
-Ehrlich gesagt würde ich es cool finden, wenn wir in `run_apply` bevor wir
-
-````
-  [[ "$RESET_DB" == true ]] && resetdb
-  [[ "$CLEAN_DB" == true ]] && cleandb
-
-  import_file_apoc "$MIXED_FILE"
-````
-
-ausführen, noch einen `check_apoc_conformity` einbauen, in welche wir --- ggf. über grep --- die Bedingungen abprüfen:
-
-(1) ✔ alle Statements enden mit ;
-(2) ✔ kein :begin oder :commit
-(3) ✔ APOC installiert & `apoc.cypher.runFile` freigegeben
-(4) ✔ Datei im import-Pfad & freigegeben in `apoc.conf`
-(5) ✔ keine Transaktionslogik (Cypher intern ist okay)
-
-Natürlich nur die (1), (2) und (5). (3) prüfen wir nur z.T. (4) gar nicht. Das erklären wir im installation guide und ggf. in der FAQ Sektion.
-
-Bekommen wir das hoch professionell, robust, korrekt und idiomatisch in `neoject` eingebaut?
-
 # feature/cql-var
-
-Question: 📌 How should `pangrm` write CQL?
-
-*Developer note*: This must be clarified before we continue with `pangrm`. We first need to know what `pangrm` or the CQL Writer should generate. But we can still continue working on the LDIF Reader!
-
-Answere: As a pure graph; no DDL (cf. `-g`)
 
 ## Actions
 
 - Align README
-- Align ADL
-- Align tests
 
 ### Neo4j v5!
 
