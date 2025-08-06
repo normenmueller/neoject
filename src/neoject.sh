@@ -2,7 +2,7 @@
 set -euo pipefail
 > neoject.log
 
-VERSION="0.2.28"
+VERSION="0.2.29"
 
 # -----------------------------------------------------------------------------
 # Exit Codes
@@ -16,9 +16,10 @@ readonly EXIT_CLI_MISSING_BASE_PARAMS=12
 readonly EXIT_CLI_INVALID_SUBCOMMAND=13
 readonly EXIT_CLI_MISSING_SUBCOMMAND=14
 readonly EXIT_CLI_INVALID_DDL_USAGE=15
-readonly EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD=16
-readonly EXIT_CLI_FILE_UNREADABLE=17
-readonly EXIT_CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET=18
+readonly EXIT_CLI_INVALID_SUBCOMMAND_FLAG=16
+readonly EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD=17
+readonly EXIT_CLI_FILE_UNREADABLE=18
+readonly EXIT_CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET=19
 
 readonly EXIT_ENV_UNSUPPORTED_NEO4J_VERSION=1000
 readonly EXIT_ENV_APOC_NOT_INSTALLED=1001
@@ -45,8 +46,6 @@ GRAPH=""
 DDL_PRE=""
 DDL_POST=""
 MIXED_FILE=""
-
-EXTRA_ARGS=()
 
 # -----------------------------------------------------------------------------
 # Logging & Help
@@ -190,7 +189,6 @@ import_mixed_file() {
     -a "$ADDRESS" \
     -d "$DBNAME" \
     --format verbose \
-    "${EXTRA_ARGS[@]:-}" \
     -f "$file" 2>&1 | tee -a neoject.log
 
   local rc=${PIPESTATUS[0]}
@@ -276,7 +274,7 @@ cleandb() {
 # -----------------------------------------------------------------------------
 
 run_testcon() {
-  if cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]:-}" >/dev/null; then
+  if cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" >/dev/null; then
     log "✅ Connection OK"
     exit $EXIT_SUCCESS
   else
@@ -299,18 +297,20 @@ run_combine() {
 
   if [[ -n "$DDL_PRE" ]]; then
     log "📄 Executing DDL PRE"
-    if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" "${EXTRA_ARGS[@]:-}" <"$DDL_PRE"; then
+    if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" <"$DDL_PRE"; then
       log "❌ DDL-PRE failed"
       exit $EXIT_DB_IMPORT_FAILED
     fi
   fi
 
   log "📦 Importing DML graph as one transaction"
-  tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose --fail-fast "${EXTRA_ARGS[@]:-}"
+  # XXX
+  tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose --fail-fast 2>&1
 :begin
 $(cat "$GRAPH")
 :commit
 EOF
+
   if [[ ${PIPESTATUS[1]} -ne 0 ]]; then
     log "❌ Graph import failed"
     exit $EXIT_DB_IMPORT_FAILED
@@ -318,7 +318,7 @@ EOF
 
   if [[ -n "$DDL_POST" ]]; then
     log "📄 Executing DDL POST"
-    if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" "${EXTRA_ARGS[@]:-}" <"$DDL_POST"; then
+    if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" <"$DDL_POST"; then
       log "❌ DDL-POST failed"
       exit $EXIT_DB_IMPORT_FAILED
     fi
@@ -390,8 +390,9 @@ case "$CMD" in
           exit $EXIT_CLI_INVALID_DDL_USAGE
           ;;
         -*)
-          EXTRA_ARGS+=("$1")
-          shift
+          echo "❌ Invalid test-con flag: $1"
+          echo "👉 Run 'neoject help' for usage." >&2
+          exit $EXIT_CLI_INVALID_SUBCOMMAND_FLAG
           ;;
         *)
           echo "❌ Invalid test-con sub-command: $1"
@@ -410,8 +411,16 @@ case "$CMD" in
         --clean-db)   CLEAN_DB=true; shift   ;;
         --reset-db)   RESET_DB=true; shift   ;;
         -h|--help)    using combine  ;;
-        -*)           EXTRA_ARGS+=("$1"); shift ;;
-        *) echo "❌ Unknown combine flag: $1"; usage ;;
+        -*)
+          echo "❌ Invalid combine flag: $1"
+          echo "👉 Run 'neoject help' for usage." >&2
+          exit $EXIT_CLI_INVALID_SUBCOMMAND_FLAG
+          ;;
+        *)
+          echo "❌ Invalid combine sub-command: $1"
+          echo "👉 Run 'neoject help' for usage." >&2
+          exit $EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD
+          ;;
       esac
     done
     ;;
@@ -422,8 +431,16 @@ case "$CMD" in
         --clean-db)   CLEAN_DB=true;   shift   ;;
         --reset-db)   RESET_DB=true;   shift   ;;
         -h|--help)    using inject             ;;
-        -*)           EXTRA_ARGS+=("$1"); shift ;;
-        *) echo "❌ Unknown inject flag: $1"; usage ;;
+        -*)
+          echo "❌ Invalid inject flag: $1"
+          echo "👉 Run 'neoject help' for usage." >&2
+          exit $EXIT_CLI_INVALID_SUBCOMMAND_FLAG
+          ;;
+        *)
+          echo "❌ Invalid inject sub-command: $1"
+          echo "👉 Run 'neoject help' for usage." >&2
+          exit $EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD
+          ;;
       esac
     done
     ;;
