@@ -2,7 +2,7 @@
 set -euo pipefail
 > neoject.log
 
-VERSION="0.2.26"
+VERSION="0.2.27"
 
 # -----------------------------------------------------------------------------
 # Exit Codes
@@ -11,20 +11,22 @@ VERSION="0.2.26"
 readonly EXIT_SUCCESS=0
 
 readonly EXIT_CLI_USAGE=10
-readonly EXIT_CLI_FILE_UNREADABLE=11
-readonly EXIT_CLI_INVALID_DDL_USAGE=12
-readonly EXIT_CLI_MISSING_SUBCOMMAND=13
-readonly EXIT_CLI_INVALID_SUBCOMMAND=14
-readonly EXIT_CLI_MISSING_BASE_PARAMS=15
-readonly EXIT_CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET=16
+readonly EXIT_CLI_INVALID_GLOBAL_FLAG=11
+readonly EXIT_CLI_MISSING_BASE_PARAMS=12
+readonly EXIT_CLI_INVALID_SUBCOMMAND=13
+readonly EXIT_CLI_MISSING_SUBCOMMAND=14
+readonly EXIT_CLI_INVALID_DDL_USAGE=15
+readonly EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD=16
+readonly EXIT_CLI_FILE_UNREADABLE=17
+readonly EXIT_CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET=18
 
-readonly EXIT_ENV_UNSUPPORTED_NEO4J_VERSION=100
-readonly EXIT_ENV_APOC_NOT_INSTALLED=101
+readonly EXIT_ENV_UNSUPPORTED_NEO4J_VERSION=1000
+readonly EXIT_ENV_APOC_NOT_INSTALLED=1001
 
-readonly EXIT_DB_TIMEOUT=1000
-readonly EXIT_DB_RESET_FAILED=1001
-readonly EXIT_DB_IMPORT_FAILED=1002
-readonly EXIT_DB_CONNECTION_FAILED=1003
+readonly EXIT_DB_CONNECTION_FAILED=100
+readonly EXIT_DB_TIMEOUT=101
+readonly EXIT_DB_RESET_FAILED=102
+readonly EXIT_DB_IMPORT_FAILED=103
 
 # -----------------------------------------------------------------------------
 # Global State
@@ -146,19 +148,14 @@ EOF
 # Validation
 # -----------------------------------------------------------------------------
 
-check_version() {
-  local version
-  version=$(cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<<'CALL dbms.components() YIELD versions RETURN versions[0];' \
-    | tail -n1 | tr -d '"')
-  if [[ "$version" == 5* ]]; then
-    log "ℹ️  Neo4j v5.x detected: $version"
-  else
-    log "❌ Neoject requires Neo4j v5.x – detected: $version"
-    exit $EXIT_ENV_UNSUPPORTED_NEO4J_VERSION
+check_cli_clsrst() {
+  if [[ "$RESET_DB" == "true" && "$CLEAN_DB" == "true" ]]; then
+    log "❌ --reset-db and --clean-db are exclusive"
+    exit $EXIT_CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET
   fi
 }
 
-check_apoc() {
+check_db_apocext() {
   if cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<<"RETURN apoc.version();" &>/dev/null; then
     log "ℹ️  APOC detected"
   else
@@ -167,10 +164,15 @@ check_apoc() {
   fi
 }
 
-check_mutually_exclusive_clean_reset() {
-  if [[ "$RESET_DB" == "true" && "$CLEAN_DB" == "true" ]]; then
-    log "❌ --reset-db and --clean-db are exclusive"
-    exit $EXIT_CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET
+check_db_version() {
+  local version
+  version=$(cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --format plain <<<'CALL dbms.components() YIELD versions RETURN versions[0];' \
+    | tail -n1 | tr -d '"')
+  if [[ "$version" == 5* ]]; then
+    log "ℹ️  Neo4j v5.x detected: $version"
+  else
+    log "❌ Neoject requires Neo4j v5.x – detected: $version"
+    exit $EXIT_ENV_UNSUPPORTED_NEO4J_VERSION
   fi
 }
 
@@ -249,7 +251,7 @@ cleandb() {
 # -----------------------------------------------------------------------------
 
 run_testcon() {
-  if cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]}" >/dev/null; then
+  if cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" "${EXTRA_ARGS[@]:-}" >/dev/null; then
     log "✅ Connection OK"
     exit $EXIT_SUCCESS
   else
@@ -263,20 +265,23 @@ run_combine() {
   [[ -n "$DDL_PRE" && ! -s "$DDL_PRE" ]]   && { log "❌ DDL pre missing";  exit $EXIT_CLI_FILE_UNREADABLE; }
   [[ -n "$DDL_POST" && ! -s "$DDL_POST" ]] && { log "❌ DDL post missing"; exit $EXIT_CLI_FILE_UNREADABLE; }
 
-  check_mutually_exclusive_clean_reset
+  check_cli_clsrst
+  check_db_version
+  check_db_apocext
+
   $RESET_DB && resetdb
   $CLEAN_DB && cleandb
 
   if [[ -n "$DDL_PRE" ]]; then
     log "📄 Executing DDL PRE"
-    if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" "${EXTRA_ARGS[@]}" <"$DDL_PRE"; then
+    if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" "${EXTRA_ARGS[@]:-}" <"$DDL_PRE"; then
       log "❌ DDL-PRE failed"
       exit $EXIT_DB_IMPORT_FAILED
     fi
   fi
 
   log "📦 Importing DML graph as one transaction"
-  tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose --fail-fast "${EXTRA_ARGS[@]}"
+  tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose --fail-fast "${EXTRA_ARGS[@]:-}"
 :begin
 $(cat "$GRAPH")
 :commit
@@ -288,7 +293,7 @@ EOF
 
   if [[ -n "$DDL_POST" ]]; then
     log "📄 Executing DDL POST"
-    if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" "${EXTRA_ARGS[@]}" <"$DDL_POST"; then
+    if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" "${EXTRA_ARGS[@]:-}" <"$DDL_POST"; then
       log "❌ DDL-POST failed"
       exit $EXIT_DB_IMPORT_FAILED
     fi
@@ -298,14 +303,20 @@ EOF
 }
 
 run_inject() {
-  [[ ! -s "$MIXED_FILE" ]] && { log "❌ Mixed file missing: $MIXED_FILE"; exit $EXIT_CLI_FILE_UNREADABLE; }
+  if [[ ! -s "$MIXED_FILE" ]]; then
+    log "❌ Mixed file missing: $MIXED_FILE"
+    exit $EXIT_CLI_FILE_UNREADABLE
+  fi
 
-  check_mutually_exclusive_clean_reset
+  check_cli_clsrst
+  check_db_version
+  check_db_apocext
+
   $RESET_DB && resetdb
   $CLEAN_DB && cleandb
 
   log "📥 Injecting mixed Cypher via cypher-shell: $MIXED_FILE"
-  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose "${EXTRA_ARGS[@]}" -f "$MIXED_FILE" 2>&1 \
+  cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose "${EXTRA_ARGS[@]:-}" -f "$MIXED_FILE" 2>&1 \
     | tee -a neoject.log
   local rc=${PIPESTATUS[0]}
   if [[ $rc -ne 0 ]]; then
@@ -329,22 +340,48 @@ while [[ $# -gt 0 ]]; do
     -d|--database)           DBNAME="$2";   shift 2 ;;
     test-con|combine|inject) CMD="$1"; shift; break ;;
     -h|--help)               usage ;;
-    *) echo "❌ Unknown global flag: $1"; usage ;;
+    -*)
+      echo "❌ Invalid global flag: $1";
+      echo "👉 Run 'neoject help' for usage." >&2
+      exit $EXIT_CLI_INVALID_GLOBAL_FLAG
+      ;;
+    *)
+      echo "❌ Invalid sub-command: $1";
+      echo "👉 Run 'neoject help' for usage." >&2
+      exit $EXIT_CLI_INVALID_SUBCOMMAND
+      ;;
   esac
 done
+
+# Check for base params
+if [[ -z "$USER" || -z "$PASSWORD" || -z "$ADDRESS" ]]; then
+  echo "❌ Missing required global options: -u <user>, -p <password> and -a <address> must all be provided" >&2
+  echo "👉 Run 'neoject help' for usage." >&2
+  exit $EXIT_CLI_MISSING_BASE_PARAMS
+fi
 
 # Phase 2: subcommand-specific flags
 case "$CMD" in
   test-con)
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        -h|--help) using test-con ;;
+        -h|--help)
+          using test-con
+          ;;
         --clean-db|--reset-db)
           echo "❌ test-con does not accept --clean-db/--reset-db"
-          usage $EXIT_CLI_INVALID_DDL_USAGE
+          echo "👉 Run 'neoject help' for usage." >&2
+          exit $EXIT_CLI_INVALID_DDL_USAGE
           ;;
-        -*) EXTRA_ARGS+=("$1"); shift ;;
-        *) echo "❌ Unknown test-con flag: $1"; usage ;;
+        -*)
+          EXTRA_ARGS+=("$1")
+          shift
+          ;;
+        *)
+          echo "❌ Invalid test-con sub-command: $1"
+          echo "👉 Run 'neoject help' for usage." >&2
+          exit $EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD
+          ;;
       esac
     done
     ;;
@@ -375,7 +412,9 @@ case "$CMD" in
     done
     ;;
   *)
-    echo "❌ Missing or invalid subcommand"; usage
+    echo "❌ Missing sub-command"
+    echo "👉 Run 'neoject help' for usage." >&2
+    exit $EXIT_CLI_MISSING_SUBCOMMAND
     ;;
 esac
 
@@ -383,23 +422,13 @@ esac
 # Dispatch
 # -----------------------------------------------------------------------------
 
-[[ -z "$USER" || -z "$PASSWORD" || -z "$ADDRESS" ]] && usage $EXIT_CLI_MISSING_BASE_PARAMS
-
 case "$CMD" in
   test-con)
-    $RESET_DB && usage $EXIT_CLI_INVALID_DDL_USAGE
-    $CLEAN_DB && usage $EXIT_CLI_INVALID_DDL_USAGE
+    #$RESET_DB && usage $EXIT_CLI_INVALID_DDL_USAGE
+    #$CLEAN_DB && usage $EXIT_CLI_INVALID_DDL_USAGE
     run_testcon
     ;;
-  combine)
-    check_apoc
-    check_version
-    run_combine
-    ;;
-  inject)
-    check_apoc
-    check_version
-    run_inject
-    ;;
+  combine) run_combine ;;
+  inject)  run_inject  ;;
 esac
 
