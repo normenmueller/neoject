@@ -78,7 +78,7 @@ setup() {
 @test "[offline] fails with unreadable file (inject)" {
   run $neoject \
     -u neo4j -p 12345678 -a neo4j://localhost:7687 \
-    inject -f ./tst/data/well-formed/valid/living.edge
+    inject -f ./tst/neo.ject
   [ "$status" -eq 18 ]
   [[ "$output" == *"Mixed file missing"* ]]
 }
@@ -121,7 +121,7 @@ setup() {
     -p 12345678 \
     -a neo4j://localhost:7687 \
     inject --reset-db \
-    -f "./tst/data/well-formed/valid/living.cql"
+    -f "./tst/data/well-formed/valid/mixed/living.cypher"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Connection OK"* ]]
 
@@ -175,7 +175,7 @@ setup() {
     -p 12345678 \
     -a neo4j://localhost:7687 \
     inject --clean-db \
-    -f "./tst/data/well-formed/valid/living.cql"
+    -f "./tst/data/well-formed/valid/mixed/living.cypher"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Connection OK"* ]]
 
