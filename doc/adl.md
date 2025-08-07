@@ -1,6 +1,31 @@
 ---
-title: Architecture Decision Log
+title: Architecture Decision Log (ADL)
+version: 0.1.4
 ...
+
+# Overview
+
+This ADL documents major design decisions for the `neoject` data import CLI tool. Neoject wraps Cypher-based graph data manipulations into structured execution pipelines and distinguishes **modular** (`-g`) from **monolithic** (`-f`) modes.
+
+## Modes Summary
+
+| Mode           | Command-line Flag | Input File(s)        | Transaction Wrapping | Intended Content       |
+| -------------- | ----------------- | -------------------- | -------------------- | ---------------------- |
+| **Modular**    | `-g`              | DML (+ optional DDL) | ✅ (DML only)        | Pure DML (graph logic) |
+| **Monolithic** | `-f`              | Mixed DDL + DML      | ❌                   | Fully specified import |
+
+## Allowed Statements by File Type
+
+| File Type         | Cypher Statements Allowed                                     | Notes                                     |
+| ----------------- | ------------------------------------------------------------- | ----------------------------------------- |
+| `--ddl-pre/post`  | `CREATE CONSTRAINT`, `DROP INDEX`, etc.                       | DDL only; read/write discouraged          |
+| `-g` (graph)      | `CREATE`, `MERGE`, `MATCH`, `UNWIND`, `SET`, `WITH`, `DELETE` | DML only; no DDL or transactions allowed  |
+| `-f` (monolithic) | Any valid Cypher (DDL + DML + transactions)                   | Treated as-is                             |
+
+📌 *See also: [Neo4j Cypher Cheat Sheet](https://neo4j.com/docs/cypher-cheat-sheet/5/all/)*
+
+- **DML** = Read, Write, Procedure, etc.
+- **DDL** = Schema, Performance, Administration blocks
 
 # ADR-001: Use shell script with `cypher-shell` for data import
 <a name="adr-wrp-cshl"></a>
@@ -19,7 +44,7 @@ To import `.cypher` files into Neo4j, multiple technical options were considered
 - REST/HTTP APIs
 - Custom clients (e.g., Haskell, Python, JavaScript)
 
-Additionally, the orchestration could have been done via:
+Additionally, orchestration could have been done via:
 
 - Bash shell script
 - Haskell CLI
@@ -28,61 +53,57 @@ Additionally, the orchestration could have been done via:
 
 ## Decision
 
-We use a shell script wrapper (`neoject`) that invokes the officially supported `cypher-shell` command-line client.
+We use a Bash shell script (`neoject`) that invokes the officially supported `cypher-shell` command-line client.
 
 ## Rationale
 
-- `cypher-shell` is **officially maintained**, **cross-platform**, and battle-tested
-- Shell scripts are **widely available**, **zero-dependency**, and **CI-friendly**
-- Easy to invoke from Makefiles, CI/CD pipelines or manually
-- Full **transaction support** with precise error propagation
-- Ideal for small-scale orchestration and first functional prototypes
-- Simple to migrate to more structured tooling in the future
-
-> This is the **most pragmatic and robust approach** for early-stage data import pipelines.
+- `cypher-shell` is officially maintained and cross-platform
+- Bash is widely available, zero-dependency, and CI-friendly
+- Easy integration into Makefiles, pipelines, or manual runs
+- No external dependencies (e.g., Python, Haskell)
 
 ## Consequences
 
-- No need for external dependencies (e.g., Python, Haskell, etc.)
-- Passwords are passed via command-line args (→ can be hardened later)
-- Error handling is delegated to `cypher-shell`
-- Logging and testability are limited compared to fully typed languages
+- Fast setup and simple distribution
+- Passwords passed via CLI (→ can be hardened later)
+- Error handling delegated to `cypher-shell`
+- Script complexity may grow over time
 
 ## Alternatives Considered
 
-- ✅ **Why Bash works well for now**:
+- ✅ **Why Bash works now**:
 
-  | Argument                         | Justification                                                   |
-  |--------------------------------- | --------------------------------------------------------------- |
-  | Near the OS                      | Directly invokes `cypher-shell`, manipulates files, uses pipes  |
-  | Fast & portable                  | No interpreter or runtime needed beyond Bash                    |
-  | Simple data model                | No need for complex in-memory structures                        |
-  | DevOps-friendly                  | Shell scripts are easy to distribute and CI-integrate           |
+  | Reason                    | Justification                                       |
+  | ------------------------- | --------------------------------------------------- |
+  | OS proximity              | Can invoke binaries, manage files and logs easily   |
+  | Lightweight               | No virtualenvs or builds required                   |
+  | Minimal data modeling     | No complex in-memory objects needed                 |
+  | DevOps-native             | Familiar to infra/CI engineers                      |
 
-- 🛑 **Why Bash will eventually hit limits**:
+- 🛑 **Why Bash may fail later**:
 
-  | Problem                          | Symptoms                                                 |
-  |--------------------------------- | -------------------------------------------------------- |
-  | Complex CLI flags & validation   | Nested, typed, or interdependent options become painful  |
-  | Poor error handling              | Weak typing of exit codes, hard to mock or unit-test     |
-  | Debugging/logging limitations    | No structured logs, poor traceability                    |
-  | Growing maintenance burden       | Refactors get risky, readability suffers at >500 LOC     |
+  | Limitation               | Symptoms                               |
+  | ------------------------ | -------------------------------------- |
+  | CLI parsing complexity   | Option validation becomes brittle      |
+  | No structured logging    | Difficult to trace or log with levels  |
+  | Hard to unit-test        | No dependency injection or mocks       |
+  | Fragile error handling   | Exit code reliance without granularity |
 
-- 🔄 **Migration paths & options**:
+- 🔄 **Migration paths**:
 
-  | Option                              | When to switch |
-  |-------------------------------------|----------------------------------------------------- |
-  | 🐍 Python + `argparse`              | When config parsing, retry logic, or file I/O grows  |
-  | 🦀 Rust (`clap`)                    | When performance or static analysis becomes critical |
-  | 🔤 Haskell (`optparse-applicative`) | When you want type-safe pipelines with rich CLI UX   |
+  | Language  | When to switch                                         |
+  | --------- | ------------------------------------------------------ |
+  | Python    | Rich CLI and data handling needed                      |
+  | Rust      | Performance and static typing required                 |
+  | Haskell   | Full type-safe orchestration and declarative pipelines |
 
 ## Future Considerations
 
-- Introduce a Haskell CLI once the complexity grows
-- Add `.env` support or interactive password input
-- Refactor the logic into modular, testable units
+- Migrate to Python or Haskell as complexity grows
+- Extract reusable modules for schema or logging
+- Support `.env` or password prompts for better security
 
-# ADR-002: neoject owns transaction boundaries in modular DML mode
+# ADR-002: neoject owns transaction boundaries in modular mode
 <a name="adr-own-trx"></a>
 
 ## Status
@@ -91,76 +112,70 @@ Accepted
 
 ## Context
 
-Graph input files provided to `neoject` via `-g` are intended to be **declarative** and must **not** contain transaction statements such as `BEGIN`, `COMMIT`, or `ROLLBACK`.
+Graph DML files (`-g`) **must** contain only **declarative, transaction-free** Cypher statements:
 
-These files define only the **DML** layer of the graph, i.e.:
+- No Cypher shell statements (e.g., `:begin`, `:commit`, `:rollback`)
+- No DDL statements (e.g., `CREATE CONSTRAINT`, `DROP INDEX`)
 
-- Node and relationship creation (`CREATE`, `MERGE`)
-- Property assignments (`SET`)
-- Pattern-based modifications (`MATCH`, `UNWIND`)
-- No schema, no side-effects, no procedural logic
-
-However, `cypher-shell` by default executes one statement at a time — meaning variable bindings and scoped graph construction will fail silently without transactional boundaries.
+These files are treated as graph data manipulations only. Transactional orchestration is the responsibility of the runtime (`neoject`).
 
 ## Decision
 
-`neoject` takes full responsibility for **wrapping modular graph files** in an explicit transaction block (`:begin` ... `:commit`) before feeding them to `cypher-shell`.
-
-This applies **only** in modular mode (`-g`). In monolithic mode (`-f`), the file is considered fully specified and no automatic wrapping occurs.
-
-## Rationale
-
-- Prevents **loss of variable scope**
-- Guarantees **atomic graph construction**
-- Encourages **clean, declarative DML** files
-- Delegates transaction orchestration to the runtime (`neoject`)
-
-## Technical Justification
-
-By design:
-
-- `cypher-shell` executes input statements independently unless wrapped
-- Variables like `(p)` or `(c)` created in one line are not retained in the next
-- Wrapping is required for correct multi-statement DML logic
-
-**Bad Example (fails silently):**
-
-```cypher
-CREATE (p:Person {name: 'Alice'});
-CREATE (c:City {name: 'Paris'});
-CREATE (p)-[:LIVES_IN]->(c);
-```
-
-**Correct Execution:**
+Neoject **automatically wraps graph DML files** in an explicit transaction:
 
 ```cypher
 :begin
-CREATE (p:Person {name: 'Alice'});
-CREATE (c:City {name: 'Paris'});
-CREATE (p)-[:LIVES_IN]->(c);
+<contents of -g file>
 :commit
 ```
 
-XXX Re-assess
+> 🚨 _Clarification_: `:begin`/`:commit` do **not** affect Cypher variable scoping. They **only** guarantee atomicity. Variables like `f` or `b` are still scoped **per statement**, unless explicitly passed via `WITH`.
+
+This happens only in `inject -g`. Monolithic mode (`inject -f`) bypasses this behavior.
+
+## Rationale
+
+- Prevents partial writes on failure
+- Ensures atomic graph import
+- Encourages clean, modular DML separation
+- Avoids fragile manual transaction markup
+
+## Technical Justification
+
+Even if a graph DML file contains 10+ statements, Neo4j will apply them **one-by-one** unless wrapped. A single syntax error mid-file would otherwise result in partial application.
+
+XXX Was heißt "unless wrapped"? Ich denke `:begin` o.ä. ist in `inject -g` nicht erlaubt. Das verwirrt mich jetzt :-/
+
+Wrapping via `:begin ... :commit` ensures:
+
+- All statements succeed or none do
+- Cypher shell returns a consistent exit code
+- CI/CD pipelines remain deterministic
 
 ## Consequences
 
-- Users must **not** include transaction markers in `-g` files
-- The modular `inject -g` logic will always wrap the input
-- Mixed files (`-f`) are treated as-is (e.g., for DDL + DML together)
+- Users must not include transaction boundaries in modular DML files
+- Variable bindings still require `WITH` or `MATCH` – wrapping does not change that
+
+  XXX Hier evtl. noch mal explizit erwähnen, dass diese Verhalten per-design von Cypher so ist!
+
+- Monolithic files may include their own transactional or imperative logic
 
 ## Alternatives Considered
 
-- Requiring users to write their own `:begin`/`:commit` markers (too error-prone)
-- Allowing unwrapped execution (risk of broken variable bindings)
+- Trusting user to wrap input (error-prone)
+- Wrapping each line separately (breaks graph semantics)
+- Allowing unwrapped graph files (fragile, non-atomic)
+
+XXX Was ist ein "unwarpped graph file"?
 
 ## Future Considerations
 
-- A `--raw` mode could bypass transaction wrapping for advanced use cases
-- See ADR-003 for how the wrapping is applied structurally
+- Introduce `--raw` to allow unwrapped execution (for advanced cases)
+- Add validation logic to ensure modular files don’t contain transactions
 
 # ADR-003: Execute modular DML graph in one atomic transaction
-<a name="adr-sgl-trx"></a>
+<a name="adr-atomic-dml"></a>
 
 ## Status
 
@@ -168,57 +183,69 @@ Accepted
 
 ## Context
 
-Modular graph imports (`inject -g`) allow splitting a Cypher specification into:
+Modular imports via `inject -g` allow decomposition into:
 
-- DDL pre-statements (`--ddl-pre`)
-- Core DML graph (`-g`)
-- DDL post-statements (`--ddl-post`)
+1. `--ddl-pre`: constraints, indexes, etc.
+2. `-g`: pure DML graph logic
+3. `--ddl-post`: cleanup, post-indexing, etc.
 
-For correctness and safety, **neoject executes the DML section as one single transaction**.
+XXX Hier ggf. den Begriff 'modular graph initialization' als Bezeichner für ein Tripple `(--ddl-pre, -g, --ddl-post)` einführen?
 
-This is **not** applied in monolithic mode (`-f`), which executes as-is without wrapping.
+Only the graph file (`-g`) is wrapped in a transaction. The DDL parts run in implicit separate transactions.
 
 ## Decision
 
-The core graph section (`-g`) is **wrapped in a single transaction block** before execution:
+Neoject wraps the core DML graph file in:
 
-```cypher
-:begin
-... contents of graph.cypher ...
-:commit
+XXX Anpasse zu: Neoject wraps a modular graph initialization in:
+
+```plaintext
+cypher-shell <"$DDL_PRE"
+cypher-shell < :begin
+               CREATE (f:Function {id: 1});
+               CREATE (b:Body {id: 2});
+               MATCH (f:Function {id:1}), (b:Body {id:2}) CREATE (f)-[:HAS]->(b);
+               :commit
+cypher-shell <"$DDL_POST"
 ```
 
-This transaction is piped directly into `cypher-shell`.
+This ensures that if anything fails, **none** of the graph changes are applied.
+
+XXX Abschlusssatz anpassen und sollten wir hier nicht ADR-002 referenzieren!?
+
+XXX Die folgenden Kapitel "Rationale", "Technical Justification" (wenn noch nötig), "Consequences", "Alternatives Considered", "Future Considered" entsprechend anpassen wenn notwendig
 
 ## Rationale
 
-- Avoids **partial writes** on failure
-- Preserves **variable bindings**
-- Makes DML graph application **atomic, deterministic, and CI-safe**
+- DDL changes can stand alone
+- DML must succeed as a **single atomic unit**
+- Failure in DML should not leave partial graph state
 
 ## Technical Justification
 
-- Neo4j guarantees **ACID behavior** for wrapped transactions
-- A failed Cypher line will rollback the entire block
-- DML-only files are often multi-statement and require execution as a unit
+Cypher shell runs each statement in isolation by default. This means:
+
+- Errors mid-file are not recoverable
+- ACID guarantees are only effective if user controls transactions
+- Rolling back changes requires explicit boundaries
 
 ## Consequences
 
-- `neoject` reads and wraps the DML input
-- All graph logic must be syntactically and semantically valid as a whole
-- Partial application of a broken graph is prevented
+- Modular files are read, wrapped, piped into shell as a unit
+- DDL and DML are kept orthogonal
+- Full rollback of graph logic is ensured
 
 ## Alternatives Considered
 
-- Streaming statements line by line (rejected: too fragile)
-- Wrapping each line (rejected: breaks variable scope)
-- Requiring pre-wrapped files (rejected: burdens the user)
+- Letting Neo4j auto-batch (no rollback guarantee)
+- Wrapping the entire import (including DDL) – rejected due to coupling
+- Manual control by user – error-prone
 
 ## Future Considerations
 
-- **Batching** very large DML inputs (e.g., N statements per transaction)
-- **Chunked execution** to avoid memory/timeouts
-- Consider using `LOAD CSV` or `neo4j-admin import` for massive datasets
+- Batch wrapping large graphs (>10K statements)
+- Partial checkpointing of batches
+- Optional retries for transient failures
 
 # ADR-004: `clean-db` preserves schema metadata; `reset-db` purges everything
 <a name="adr-cls-vs-rst"></a>
@@ -229,64 +256,128 @@ Accepted
 
 ## Context
 
-Neoject supports two distinct ways to clear the database:
+Neoject offers two options to clear the database:
 
-- `clean-db`: Clears **data and schema**, but retains internal metadata
-- `reset-db`: Drops and recreates the database — including all metadata
-
-This decision clarifies the **semantic difference** between both commands and their implications.
+- `clean-db`: removes all nodes, relationships, indexes, constraints
+- `reset-db`: drops and recreates the database completely
 
 ## Decision
 
-- `clean-db` will:
-  - Delete all **nodes** and **relationships**
-  - Drop all **constraints** and **indexes**
-  - But **retain** all internal metadata:
-    - **Labels**
-    - **Property Keys**
-    - **Relationship Types**
+| Operation     | Deletes Data | Deletes Schema | Deletes Metadata |
+| ------------- | ------------ | -------------- | ---------------- |
+| `clean-db`    | ✅           | ✅             | ❌               |
+| `reset-db`    | ✅           | ✅             | ✅               |
 
-- `reset-db` will:
-  - Drop the database completely
-  - Recreate it from scratch via the `system` database
-  - Result in a **fully clean slate** — including deletion of all metadata
+Neo4j **retains schema metadata** (labels, keys, rel types) unless the DB is dropped.
 
 ## Rationale
 
-- **Preserving schema metadata** (as done in `clean-db`) can speed up repeated development cycles and avoid costly cache rebuilds
-- **Full resets** (via `reset-db`) are essential in CI/CD or benchmarking where a consistent, empty graph is needed
-- The behavior aligns with Neo4j's internal architecture:
-  - Schema metadata is retained unless the database is dropped
+- Cleaning is sufficient for dev/test cycles
+- Reset is required for truly fresh DB (e.g. CI/CD or introspection)
+- Metadata like labels remain visible unless purged
 
 ## Technical Justification
 
-Neo4j stores **labels**, **property keys**, and **relationship types** in a **schema store**, which is not cleared via Cypher operations.
+Neo4j stores metadata in internal system stores. Only:
 
-| Operation                         | Deletes data | Deletes schema | Deletes metadata |
-|-----------------------------------|--------------|----------------|------------------|
-| `MATCH (n) DETACH DELETE n`       | ✅           | ❌             | ❌               |
-| `CALL apoc.periodic.iterate(...)` | ✅           | ❌             | ❌               |
-| `DROP CONSTRAINT`, `DROP INDEX`   | ❌           | ✅             | ❌               |
-| `DROP DATABASE`                   | ✅           | ✅             | ✅               |
+```cypher
+DROP DATABASE <name>;
+```
 
-Thus, only `DROP DATABASE` guarantees a complete purge.
+removes these entries.
 
 ## Consequences
 
-- Users must be aware that `clean-db` does **not** fully reset the database
-- Metadata will persist between `clean-db` runs, which may affect introspection tools
-- `reset-db` is the preferred method for true reinitialization
-- `reset-db` requires elevated privileges (SYSTEM access)
+- Tools like Neo4j Desktop may show labels/types after `clean-db`
+- `reset-db` requires SYSTEM access
+- Script must wait until recreated DB becomes ONLINE
 
 ## Alternatives Considered
 
-- Attempting to delete metadata manually (rejected: Neo4j does not expose such capabilities)
-- Dropping and recreating all individual labels/types via APOC (rejected: impossible)
-- Requiring users to always use `reset-db` (rejected: too heavy for dev workflows)
+- Using APOC to delete metadata (not possible)
+- Resetting via file deletion (unportable)
 
 ## Future Considerations
 
-- Provide a `--hard-clean` or `--deep-clean` alias for `reset-db`
-- Allow users to inspect existing schema metadata (e.g. `SHOW LABELS`, `SHOW PROPERTY KEYS`)
-- Extend help text to clarify distinction during `--help`
+- Add `--hard-clean` flag as alias to `reset-db`
+- Provide metadata inspection command (`SHOW LABELS`, etc.)
+- Warn user if SYSTEM access is missing
+
+---
+
+# ADR-005: Cypher modular style must avoid cross-statement variable references
+<a name="adr-modular-style"></a>
+
+## Status
+
+Accepted
+
+## Context
+
+Cypher variables are **statement-local** unless passed via `WITH`.
+
+This applies regardless of transaction wrapping. Many `.cypher` files fail silently by assuming that:
+
+```cypher
+CREATE (f:Function {id: 1});
+CREATE (b:Body {id: 2});
+CREATE (f)-[:HAS]->(b);  // 🚫 f/b are not defined here
+```
+
+This creates _4 nodes_ and _no relationship_.
+
+## Decision
+
+Modular DML files **must** follow one of these valid patterns:
+
+- **Pattern-matching**:
+
+  ```cypher
+  CREATE (f:Function {id: 1});
+  CREATE (b:Body {id: 2});
+  MATCH (f:Function {id:1}), (b:Body {id:2}) CREATE (f)-[:HAS]->(b);
+  ```
+
+- **WITH chaining**:
+
+  ```cypher
+  CREATE (f:Function {id: 1});
+  CREATE (b:Body {id: 2});
+  WITH f, b
+  CREATE (f)-[:HAS]->(b);
+  ```
+
+- **Single statement**:
+
+  ```cypher
+  CREATE (f:Function {id: 1}), (b:Body {id: 2}), (f)-[:HAS]->(b);
+  ```
+
+## Rationale
+
+- Prevents duplicate nodes and missing relationships
+- Works in browser, CLI, CI/CD alike
+- Avoids confusion from implicit Cypher behavior
+
+## Technical Justification
+
+Neo4j does **not** preserve variables across statements.
+
+Wrapping in `:begin/:commit` ensures atomicity, but **not** variable visibility.
+
+## Consequences
+
+- All `.cypher` authors must use `WITH` or `MATCH`
+- `neoject` does not validate this (yet)
+- Failures may be silent unless tested manually
+
+## Alternatives Considered
+
+- Auto-rewriting Cypher (rejected: dangerous)
+- Pre-validating for cross-scope variables (not implemented yet)
+
+## Future Considerations
+
+- Add `neoject lint` to statically check modular files
+- Provide examples and tooling to verify graph shape post-import
 
