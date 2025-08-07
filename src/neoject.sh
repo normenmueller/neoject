@@ -288,7 +288,7 @@ EOF
                <<<"SHOW DATABASE $DBNAME YIELD currentStatus;" \
              | tail -n+2 | tr -d '"' | xargs)
     if [[ "$status" == "online" ]]; then
-      log "ℹ️  Database '$DBNAME' is online."
+      log "ℹ️  Database '$DBNAME' is back online."
       return 0
     fi
     log "⏳ Waiting for '$DBNAME' to come online (status='$status')… ($i/30)"
@@ -360,14 +360,21 @@ inject-modu() {
   [[ -n "$DDL_PRE" && ! -s "$DDL_PRE" ]]   && { log "❌ DDL pre missing";  exit $EXIT_CLI_FILE_UNREADABLE; }
   [[ -n "$DDL_POST" && ! -s "$DDL_POST" ]] && { log "❌ DDL post missing"; exit $EXIT_CLI_FILE_UNREADABLE; }
 
-  log "📥 Merging DDL pre, DML graph, and DDL post"
-
   check_cli_clsrst
   check_db_version
   check_db_apocext
 
-  $RESET_DB && rstdb
-  $CLEAN_DB && clsdb
+  if [[ "$CLEAN_DB" == "true" ]]; then
+    log "🧹 Cleaning database '$DBNAME' before injection…"
+    clsdb
+  fi
+
+  if [[ "$RESET_DB" == "true" ]]; then
+    log "⚠️  Resetting database '$DBNAME' before injection…"
+    rstdb
+  fi
+
+  log "📥 Merging DDL pre, DML graph, and DDL post"
 
   cmbcmp
 
@@ -381,14 +388,21 @@ inject_mono() {
     exit $EXIT_CLI_FILE_UNREADABLE
   fi
 
-  log "📥 Injecting mixed Cypher via file: $MIXED_FILE"
-
   check_cli_clsrst
   check_db_version
   check_db_apocext
 
-  $RESET_DB && rstdb
-  $CLEAN_DB && clsdb
+  if [[ "$CLEAN_DB" == "true" ]]; then
+    log "🧹 Cleaning database '$DBNAME' before injection…"
+    clsdb
+  fi
+
+  if [[ "$RESET_DB" == "true" ]]; then
+    log "⚠️  Resetting database '$DBNAME' before injection…"
+    rstdb
+  fi
+
+  log "📥 Injecting mixed Cypher via file: $MIXED_FILE"
 
   injmxf "$MIXED_FILE"
 
