@@ -1,6 +1,6 @@
 ---
 title: Architecture Decision Log (ADL)
-version: 0.1.6
+version: 0.1.7
 ...
 
 # Overview
@@ -232,11 +232,9 @@ If any statement inside the `-g` transaction fails, **none** of its changes are 
 
 ## Alternatives Considered
 
-- Wrapping the entire triplet in one transaction → rejected because schema operations and DML are better separated for clarity and error recovery
+- Wrapping the entire triplet (`--ddl-pre`, `-g`, `--ddl-post`) in one transaction → rejected because many DDL statements in Neo4j cannot be executed inside an explicit transaction, and separating schema operations from DML improves clarity and error recovery.
 - Leaving `-g` unwrapped → rejected as it allows partial data loads
 - Forcing all imports to be monolithic → rejected; modular mode is more flexible
-
-XXX "Wrapping the entire triplet in one transaction" Hä? Darf denn zw. `:begin` und `:commit` DDL Befehle stehen? Ich dachte die müssen nicht-transaktional ausgeführt werden?
 
 ## Future Considerations
 
