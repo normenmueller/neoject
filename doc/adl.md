@@ -1,11 +1,11 @@
 ---
 title: Architecture Decision Log (ADL)
-version: 0.1.4
+version: 0.1.6
 ...
 
 # Overview
 
-This ADL documents major design decisions for the `neoject` data import CLI tool. Neoject wraps Cypher-based graph data manipulations into structured execution pipelines and distinguishes **modular** (`-g`) from **monolithic** (`-f`) modes.
+This ADL documents major design decisions for the `neoject` data import CLI tool. Neoject wraps Cypher-based graph initializations into structured execution pipelines and distinguishes **modular** (`-g`) from **monolithic** (`-f`) modes.
 
 ## Modes Summary
 
@@ -106,6 +106,8 @@ We use a Bash shell script (`neoject`) that invokes the officially supported `cy
 # ADR-002: neoject owns transaction boundaries in modular mode
 <a name="adr-own-trx"></a>
 
+<!-- The All-or-Nothing ADR ;-) -->
+
 ## Status
 
 Accepted
@@ -114,14 +116,14 @@ Accepted
 
 Graph DML files (`-g`) **must** contain only **declarative, transaction-free** Cypher statements:
 
-- No Cypher shell statements (e.g., `:begin`, `:commit`, `:rollback`)
+- No Cypher shell meta-commands (e.g., `:begin`, `:commit`, `:rollback`)
 - No DDL statements (e.g., `CREATE CONSTRAINT`, `DROP INDEX`)
 
 These files are treated as graph data manipulations only. Transactional orchestration is the responsibility of the runtime (`neoject`).
 
 ## Decision
 
-Neoject **automatically wraps graph DML files** in an explicit transaction:
+Neoject **automatically wraps** the contents of a modular graph DML file in a single transaction:
 
 ```cypher
 :begin
@@ -129,52 +131,49 @@ Neoject **automatically wraps graph DML files** in an explicit transaction:
 :commit
 ```
 
-> 🚨 _Clarification_: `:begin`/`:commit` do **not** affect Cypher variable scoping. They **only** guarantee atomicity. Variables like `f` or `b` are still scoped **per statement**, unless explicitly passed via `WITH`.
+> 🚨 _Clarification_:
+> `:begin`/`:commit` do **not** change Cypher variable scoping — variables remain **per statement** unless explicitly passed via `WITH`. The wrapping **only** provides all-or-nothing execution (atomicity). User-supplied transaction markers in modular mode are **forbidden**; wrapping is always performed by `neoject`.
 
-This happens only in `inject -g`. Monolithic mode (`inject -f`) bypasses this behavior.
+This happens only in `inject -g`. Monolithic mode (`inject -f`) executes the file exactly as given.
 
 ## Rationale
 
-- Prevents partial writes on failure
-- Ensures atomic graph import
-- Encourages clean, modular DML separation
-- Avoids fragile manual transaction markup
+- Prevents partial writes if any statement fails
+- Ensures atomic DML execution in modular imports
+- Centralizes transaction control in one place (`neoject`)
+- Avoids fragile and inconsistent manual transaction markup
 
 ## Technical Justification
 
-Even if a graph DML file contains 10+ statements, Neo4j will apply them **one-by-one** unless wrapped. A single syntax error mid-file would otherwise result in partial application.
-
-XXX Was heißt "unless wrapped"? Ich denke `:begin` o.ä. ist in `inject -g` nicht erlaubt. Das verwirrt mich jetzt :-/
+Without wrapping, Neo4j (via `cypher-shell`) will execute each statement independently; a failure mid-file leaves earlier statements committed and later ones skipped.
 
 Wrapping via `:begin ... :commit` ensures:
 
 - All statements succeed or none do
-- Cypher shell returns a consistent exit code
-- CI/CD pipelines remain deterministic
+- The Cypher shell returns a clear non-zero exit code on failure
+- CI/CD runs are deterministic
+
+The need for `WITH`/`MATCH` to carry variables across statements is a separate Cypher design rule — wrapping does not bypass it.
 
 ## Consequences
 
-- Users must not include transaction boundaries in modular DML files
-- Variable bindings still require `WITH` or `MATCH` – wrapping does not change that
-
-  XXX Hier evtl. noch mal explizit erwähnen, dass diese Verhalten per-design von Cypher so ist!
-
-- Monolithic files may include their own transactional or imperative logic
+- Modular DML files must not contain transaction boundaries
+- Cypher variables must be propagated explicitly if reused
+  (_This is by design of the Cypher language itself_)
+- Monolithic files may include their own transactions and are executed as-is
 
 ## Alternatives Considered
 
-- Trusting user to wrap input (error-prone)
-- Wrapping each line separately (breaks graph semantics)
-- Allowing unwrapped graph files (fragile, non-atomic)
-
-XXX Was ist ein "unwarpped graph file"?
+- **Unwrapped graph file** = modular file executed statement-by-statement without `:begin/:commit` → rejected as fragile and non-atomic
+- Letting users wrap their own transactions → rejected, too error-prone
+- Wrapping each line separately → breaks graph semantics and is inefficient
 
 ## Future Considerations
 
-- Introduce `--raw` to allow unwrapped execution (for advanced cases)
-- Add validation logic to ensure modular files don’t contain transactions
+- `--raw` flag to bypass wrapping for expert scenarios
+- Static validation to detect forbidden DDL or transaction markers in modular mode
 
-# ADR-003: Execute modular DML graph in one atomic transaction
+# ADR-003: Execute modular graph initialization in two non-transactional and one transactional step
 <a name="adr-atomic-dml"></a>
 
 ## Status
@@ -183,69 +182,67 @@ Accepted
 
 ## Context
 
-Modular imports via `inject -g` allow decomposition into:
+A **modular graph initialization** is the triplet:
 
-1. `--ddl-pre`: constraints, indexes, etc.
-2. `-g`: pure DML graph logic
-3. `--ddl-post`: cleanup, post-indexing, etc.
+1. `--ddl-pre`: constraints, indexes, or other schema setup (runs non-transactionally)
+2. `-g`: pure DML graph logic (runs **within a single explicit transaction**)
+3. `--ddl-post`: optional schema updates or cleanup (runs non-transactionally)
 
-XXX Hier ggf. den Begriff 'modular graph initialization' als Bezeichner für ein Tripple `(--ddl-pre, -g, --ddl-post)` einführen?
-
-Only the graph file (`-g`) is wrapped in a transaction. The DDL parts run in implicit separate transactions.
+Only the `-g` part is wrapped in `:begin ... :commit`. This separation allows schema changes to be applied before and after the DML, while keeping the data import atomic.
 
 ## Decision
 
-Neoject wraps the core DML graph file in:
-
-XXX Anpasse zu: Neoject wraps a modular graph initialization in:
+Neoject executes a modular graph initialization as:
 
 ```plaintext
 cypher-shell <"$DDL_PRE"
-cypher-shell < :begin
-               CREATE (f:Function {id: 1});
-               CREATE (b:Body {id: 2});
-               MATCH (f:Function {id:1}), (b:Body {id:2}) CREATE (f)-[:HAS]->(b);
-               :commit
+cypher-shell <<'EOF'
+:begin
+<contents of -g file>
+:commit
+EOF
 cypher-shell <"$DDL_POST"
 ```
 
-This ensures that if anything fails, **none** of the graph changes are applied.
+If any statement inside the `-g` transaction fails, **none** of its changes are committed, but the surrounding DDL parts remain applied.
 
-XXX Abschlusssatz anpassen und sollten wir hier nicht ADR-002 referenzieren!?
-
-XXX Die folgenden Kapitel "Rationale", "Technical Justification" (wenn noch nötig), "Consequences", "Alternatives Considered", "Future Considered" entsprechend anpassen wenn notwendig
+(See [ADR-002](#adr-own-trx) for details on why wrapping is enforced in modular mode.)
 
 ## Rationale
 
-- DDL changes can stand alone
-- DML must succeed as a **single atomic unit**
-- Failure in DML should not leave partial graph state
+- Schema changes (`--ddl-pre`/`--ddl-post`) can stand alone
+- DML graph logic (`-g`) must succeed entirely or not at all
+- Clean separation reduces coupling and improves maintainability
 
 ## Technical Justification
 
-Cypher shell runs each statement in isolation by default. This means:
-
-- Errors mid-file are not recoverable
-- ACID guarantees are only effective if user controls transactions
-- Rolling back changes requires explicit boundaries
+- Neo4j ACID guarantees apply only to statements within the same explicit transaction
+- By isolating `-g` into one transaction, any failure causes a rollback of all graph data manipulations
+- Schema changes remain in place, which is often desired (e.g., indexes for debugging a failed import)
 
 ## Consequences
 
-- Modular files are read, wrapped, piped into shell as a unit
-- DDL and DML are kept orthogonal
-- Full rollback of graph logic is ensured
+- Modular imports run in exactly **three** distinct execution units:
+
+  1) DDL pre (non-transactional)
+  2) DML graph (atomic transaction)
+  3) DDL post (non-transactional)
+
+- Users can rely on `-g` being all-or-nothing, without worrying about partial graph writes
 
 ## Alternatives Considered
 
-- Letting Neo4j auto-batch (no rollback guarantee)
-- Wrapping the entire import (including DDL) – rejected due to coupling
-- Manual control by user – error-prone
+- Wrapping the entire triplet in one transaction → rejected because schema operations and DML are better separated for clarity and error recovery
+- Leaving `-g` unwrapped → rejected as it allows partial data loads
+- Forcing all imports to be monolithic → rejected; modular mode is more flexible
+
+XXX "Wrapping the entire triplet in one transaction" Hä? Darf denn zw. `:begin` und `:commit` DDL Befehle stehen? Ich dachte die müssen nicht-transaktional ausgeführt werden?
 
 ## Future Considerations
 
-- Batch wrapping large graphs (>10K statements)
-- Partial checkpointing of batches
-- Optional retries for transient failures
+- Optional batch execution for huge `-g` files (>10k statements)
+- Allow configurable transaction size for modular graph initializations
+- Retry logic for transient errors in the `-g` phase
 
 # ADR-004: `clean-db` preserves schema metadata; `reset-db` purges everything
 <a name="adr-cls-vs-rst"></a>
