@@ -220,3 +220,73 @@ This transaction is piped directly into `cypher-shell`.
 - **Chunked execution** to avoid memory/timeouts
 - Consider using `LOAD CSV` or `neo4j-admin import` for massive datasets
 
+# ADR-004: `clean-db` preserves schema metadata; `reset-db` purges everything
+<a name="adr-cls-vs-rst"></a>
+
+## Status
+
+Accepted
+
+## Context
+
+Neoject supports two distinct ways to clear the database:
+
+- `clean-db`: Clears **data and schema**, but retains internal metadata
+- `reset-db`: Drops and recreates the database — including all metadata
+
+This decision clarifies the **semantic difference** between both commands and their implications.
+
+## Decision
+
+- `clean-db` will:
+  - Delete all **nodes** and **relationships**
+  - Drop all **constraints** and **indexes**
+  - But **retain** all internal metadata:
+    - **Labels**
+    - **Property Keys**
+    - **Relationship Types**
+
+- `reset-db` will:
+  - Drop the database completely
+  - Recreate it from scratch via the `system` database
+  - Result in a **fully clean slate** — including deletion of all metadata
+
+## Rationale
+
+- **Preserving schema metadata** (as done in `clean-db`) can speed up repeated development cycles and avoid costly cache rebuilds
+- **Full resets** (via `reset-db`) are essential in CI/CD or benchmarking where a consistent, empty graph is needed
+- The behavior aligns with Neo4j's internal architecture:
+  - Schema metadata is retained unless the database is dropped
+
+## Technical Justification
+
+Neo4j stores **labels**, **property keys**, and **relationship types** in a **schema store**, which is not cleared via Cypher operations.
+
+| Operation                         | Deletes data | Deletes schema | Deletes metadata |
+|-----------------------------------|--------------|----------------|------------------|
+| `MATCH (n) DETACH DELETE n`       | ✅           | ❌             | ❌               |
+| `CALL apoc.periodic.iterate(...)` | ✅           | ❌             | ❌               |
+| `DROP CONSTRAINT`, `DROP INDEX`   | ❌           | ✅             | ❌               |
+| `DROP DATABASE`                   | ✅           | ✅             | ✅               |
+
+Thus, only `DROP DATABASE` guarantees a complete purge.
+
+## Consequences
+
+- Users must be aware that `clean-db` does **not** fully reset the database
+- Metadata will persist between `clean-db` runs, which may affect introspection tools
+- `reset-db` is the preferred method for true reinitialization
+- `reset-db` requires elevated privileges (SYSTEM access)
+
+## Alternatives Considered
+
+- Attempting to delete metadata manually (rejected: Neo4j does not expose such capabilities)
+- Dropping and recreating all individual labels/types via APOC (rejected: impossible)
+- Requiring users to always use `reset-db` (rejected: too heavy for dev workflows)
+
+## Future Considerations
+
+- Provide a `--hard-clean` or `--deep-clean` alias for `reset-db`
+- Allow users to inspect existing schema metadata (e.g. `SHOW LABELS`, `SHOW PROPERTY KEYS`)
+- Extend help text to clarify distinction during `--help`
+

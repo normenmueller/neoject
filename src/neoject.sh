@@ -19,7 +19,6 @@ readonly EXIT_CLI_INVALID_DDL_USAGE=15
 readonly EXIT_CLI_INVALID_SUBCOMMAND_FLAG=16
 readonly EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD=17
 readonly EXIT_CLI_FILE_UNREADABLE=18
-#readonly EXIT_CLI_MUTUAL_EXCLUSIVE_CLEAN_RESET=19
 
 readonly EXIT_ENV_UNSUPPORTED_NEO4J_VERSION=1000
 readonly EXIT_ENV_APOC_NOT_INSTALLED=1001
@@ -76,8 +75,7 @@ Subcommands:
       Test Neo4j connectivity (no DB changes)
 
   clean-db
-      Wipes all data (nodes, constraints, indexes) from $DBNAME
-      using APOC
+      Wipes all data from $DBNAME
 
   reset-db
       Drops and recreates database $DBNAME
@@ -145,8 +143,10 @@ Usage:
   neoject.sh clean-db
 
 Description:
-  Removes all nodes, constraints and indexes from the target database
-  using APOC. Leaves database itself intact.
+  Removes all nodes, relationships, constraints, and indexes from the database.
+  Internal metadata such as Labels, Property Keys, and Relationship Types remain.
+
+  Use this if you want to clear data but retain schema metadata.
 
 Requires:
   - ⚠️ APOC plugin installed
@@ -162,9 +162,13 @@ Usage:
   neoject.sh reset-db
 
 Description:
-
   Drops and recreates the database defined via -d (default: neo4j).
-  ⚠️ This is destructive: all data and schema will be lost!
+  ⚠️  This removes **all data, schema, and internal metadata** —
+     including Labels, Property Keys, and Relationship Types.
+
+Requires:
+  - SYSTEM database access
+  - Will interrupt availability of the database
 EOF
       exit $EXIT_SUCCESS
       ;;
