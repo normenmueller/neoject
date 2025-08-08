@@ -20,10 +20,15 @@ setup() {
   db=neo4j
   neo4j_url=neo4j://localhost:7687
 
-  mixed="./tst/data/well-formed/valid/mixed/living.cypher"
+  living_mxf="./tst/data/well-formed/valid/mixed/living.cypher"
+  living_grp="./tst/data/well-formed/valid/divided/living/living-grp.cql"
+  living_pre="./tst/data/well-formed/valid/divided/living/living-pre.cql"
 
-  graph="./tst/data/well-formed/valid/divided/living/living-grp.cql"
-  ddl_pre="./tst/data/well-formed/valid/divided/living/living-pre.cql"
+  movies1_mxf="./tst/data/well-formed/valid/mixed/movies-1.cypher"
+  movies2_mxf="./tst/data/well-formed/valid/mixed/movies-2.cypher"
+  movies3_mxf="./tst/data/well-formed/valid/mixed/movies-3.cypher"
+  movies3_grp="./tst/data/well-formed/valid/divided/movies/movies-3-grp.cql"
+  movies3_pre="./tst/data/well-formed/valid/divided/movies/movies-3-pre.cql"
 }
 
 # Run a Cypher query and print the single scalar result (plain output)
@@ -66,51 +71,12 @@ run_neoject() {
 }
 
 # -------------------------------------------------------------------
-# Monolithic (-f): baseline flows (reset/clean)
-# -------------------------------------------------------------------
-
-@test "[online/-f] monolithic import with --reset-db" {
-  run_neoject inject --reset-db -f "$mixed"
-  [ "$status" -eq 0 ]
-  assert_counts Person 2 City 2 LIVES_IN 2
-}
-
-@test "[online/-f] monolithic import with --clean-db" {
-  run_neoject inject --clean-db -f "$mixed"
-  [ "$status" -eq 0 ]
-  assert_counts Person 2 City 2 LIVES_IN 2
-}
-
-# -------------------------------------------------------------------
-# Modular (-g): baseline flows (reset) + quick sanity
-# -------------------------------------------------------------------
-
-@test "[online/-g] modular import (fun) with --reset-db" {
-  run_neoject inject --reset-db -g "./tst/data/well-formed/valid/divided/fun/fun-grp.cql"
-  [ "$status" -eq 0 ]
-  local node_count; node_count="$(cypher_val 'MATCH (n) RETURN count(n) AS c')"
-  [ "$node_count" -ge 2 ]
-}
-
-@test "[online/-g] modular import (living) with --reset-db + --ddl-pre" {
-  run_neoject inject --reset-db --ddl-pre "$ddl_pre" -g "$graph"
-  [ "$status" -eq 0 ]
-  assert_counts Person 2 City 2 LIVES_IN 2
-}
-
-@test "[online/-g] modular import (living) with --clean-db + --ddl-pre" {
-  run_neoject inject --clean-db --ddl-pre "$ddl_pre" -g "$graph"
-  [ "$status" -eq 0 ]
-  assert_counts Person 2 City 2 LIVES_IN 2
-}
-
-# -------------------------------------------------------------------
 # Admin commands: clean-db / reset-db
 # -------------------------------------------------------------------
 
 @test "[online] clean-db wipes graph contents" {
   # seed
-  run_neoject inject --clean-db -f "$mixed"
+  run_neoject inject --clean-db -f "$living_mxf"
   [ "$status" -eq 0 ]
   local seeded; seeded="$(cypher_val 'MATCH (n) RETURN count(n) AS c')"
   [ "$seeded" -gt 0 ]
@@ -125,7 +91,7 @@ run_neoject() {
 
 @test "[online] reset-db drops & recreates DB" {
   # seed
-  run_neoject inject --reset-db -f "$mixed"
+  run_neoject inject --reset-db -f "$living_mxf"
   [ "$status" -eq 0 ]
   local seeded; seeded="$(cypher_val 'MATCH (n) RETURN count(n) AS c')"
   [ "$seeded" -gt 0 ]
@@ -139,23 +105,17 @@ run_neoject() {
 }
 
 # -------------------------------------------------------------------
-# --------- -g Mode (Chunking always ON) ----------------------------
+# Monolithic (-f): baseline flows (reset/clean)
 # -------------------------------------------------------------------
 
-@test "[online/-g] --chunk-stmts 1 + --reset-db" {
-  run_neoject inject --reset-db -g "$graph" --chunk-stmts 1
+@test "[online/-f] monolithic import with --reset-db" {
+  run_neoject inject --reset-db -f "$living_mxf"
   [ "$status" -eq 0 ]
   assert_counts Person 2 City 2 LIVES_IN 2
 }
 
-@test "[online/-g] --chunk-bytes 64 (very small byte chunks)" {
-  run_neoject inject --reset-db -g "$graph" --chunk-bytes 64
-  [ "$status" -eq 0 ]
-  assert_counts Person 2 City 2 LIVES_IN 2
-}
-
-@test "[online/-g] --chunk-stmts 2 + --batch-delay 5ms + --ddl-pre" {
-  run_neoject inject --reset-db --ddl-pre "$ddl_pre" -g "$graph" --chunk-stmts 2 --batch-delay 5
+@test "[online/-f] monolithic import with --clean-db" {
+  run_neoject inject --clean-db -f "$living_mxf"
   [ "$status" -eq 0 ]
   assert_counts Person 2 City 2 LIVES_IN 2
 }
@@ -165,26 +125,95 @@ run_neoject() {
 # -------------------------------------------------------------------
 
 @test "[online/-f] --chunked (no size args) → 1 chunk (whole file)" {
-  run_neoject inject --reset-db -f "$mixed" --chunked
+  run_neoject inject --reset-db -f "$living_mxf" --chunked
   [ "$status" -eq 0 ]
   assert_counts Person 2 City 2 LIVES_IN 2
 }
 
 @test "[online/-f] --chunked --chunk-stmts 1" {
-  run_neoject inject --reset-db -f "$mixed" --chunked --chunk-stmts 1
+  run_neoject inject --reset-db -f "$living_mxf" --chunked --chunk-stmts 1
   [ "$status" -eq 0 ]
   assert_counts Person 2 City 2 LIVES_IN 2
 }
 
 @test "[online/-f] --chunked --chunk-bytes 64" {
-  run_neoject inject --reset-db -f "$mixed" --chunked --chunk-bytes 64
+  run_neoject inject --reset-db -f "$living_mxf" --chunked --chunk-bytes 64
   [ "$status" -eq 0 ]
   assert_counts Person 2 City 2 LIVES_IN 2
 }
 
 @test "[online/-f] --chunked --chunk-stmts 2 --batch-delay 5ms" {
-  run_neoject inject --reset-db -f "$mixed" --chunked --chunk-stmts 2 --batch-delay 5
+  run_neoject inject --reset-db -f "$living_mxf" --chunked --chunk-stmts 2 --batch-delay 5
   [ "$status" -eq 0 ]
   assert_counts Person 2 City 2 LIVES_IN 2
+}
+
+@test "[online/-f] movies-1 --chunked --chunk-stmts 10" {
+  run_neoject inject --reset-db -f "$movies1_mxf" --chunked --chunk-stmts 10
+  [ "$status" -eq 0 ]
+  assert_counts Person 133 Movie 38 ACTED_IN 172
+}
+
+@test "[online/-f] movies-2 --chunked --chunk-stmts 10" {
+  run_neoject inject --reset-db -f "$movies2_mxf" --chunked --chunk-stmts 10
+  [ "$status" -eq 0 ]
+  assert_counts Person 133 Movie 38 ACTED_IN 172
+}
+
+@test "[online/-f] movies-3 --chunked --chunk-stmts 10" {
+  run_neoject inject --reset-db -f "$movies3_mxf" --chunked --chunk-stmts 10
+  [ "$status" -eq 0 ]
+  assert_counts Person 133 Movie 38 ACTED_IN 172
+}
+
+# -------------------------------------------------------------------
+# Modular (-g): baseline flows (reset) + quick sanity
+# -------------------------------------------------------------------
+
+@test "[online/-g] modular import (fun) with --reset-db" {
+  run_neoject inject --reset-db -g "./tst/data/well-formed/valid/divided/fun/fun-grp.cql"
+  [ "$status" -eq 0 ]
+  local node_count; node_count="$(cypher_val 'MATCH (n) RETURN count(n) AS c')"
+  [ "$node_count" -ge 2 ]
+}
+
+@test "[online/-g] modular import (living) with --reset-db + --ddl-pre" {
+  run_neoject inject --reset-db --ddl-pre "$living_pre" -g "$living_grp"
+  [ "$status" -eq 0 ]
+  assert_counts Person 2 City 2 LIVES_IN 2
+}
+
+@test "[online/-g] modular import (living) with --clean-db + --ddl-pre" {
+  run_neoject inject --clean-db --ddl-pre "$living_pre" -g "$living_grp"
+  [ "$status" -eq 0 ]
+  assert_counts Person 2 City 2 LIVES_IN 2
+}
+
+# -------------------------------------------------------------------
+# --------- -g Mode (Chunking always ON) ----------------------------
+# -------------------------------------------------------------------
+
+@test "[online/-g] --chunk-stmts 1 + --reset-db" {
+  run_neoject inject --reset-db -g "$living_grp" --chunk-stmts 1
+  [ "$status" -eq 0 ]
+  assert_counts Person 2 City 2 LIVES_IN 2
+}
+
+@test "[online/-g] --chunk-bytes 64 (very small byte chunks)" {
+  run_neoject inject --reset-db -g "$living_grp" --chunk-bytes 64
+  [ "$status" -eq 0 ]
+  assert_counts Person 2 City 2 LIVES_IN 2
+}
+
+@test "[online/-g] --chunk-stmts 2 + --batch-delay 5ms + --ddl-pre" {
+  run_neoject inject --reset-db --ddl-pre "$living_pre" -g "$living_grp" --chunk-stmts 2 --batch-delay 5
+  [ "$status" -eq 0 ]
+  assert_counts Person 2 City 2 LIVES_IN 2
+}
+
+@test "[online/-g] movies-3 --chunked --chunk-stmts 10" {
+  run_neoject inject --reset-db -g "$movies3_grp" --ddl-pre "$movies3_pre" --chunk-stmts 1
+  [ "$status" -eq 0 ]
+  assert_counts Person 133 Movie 38 ACTED_IN 172
 }
 
