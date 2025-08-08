@@ -4,7 +4,41 @@ title: Roadmap
 
 # feature/cql-var
 
-## Actions
+## Current topic
+
+### Gültige Parameterkombinationen
+
+| Modus | Pflicht für Chunking | Erlaubte Flags                                   | Ausschlüsse                      |
+| ----- | -------------------- | ------------------------------------------------ | -------------------------------- |
+| `-g`  | — (immer aktiv)      | `--chunk-size`, `--chunk-bytes`, `--batch-delay` | `--chunk-size` ⊕ `--chunk-bytes` |
+| `-f`  | `--chunked`          | `--chunk-size`, `--chunk-bytes`, `--batch-delay` | `--chunk-size` ⊕ `--chunk-bytes` |
+
+### Defaultwerte für -g
+
+* `--chunk-size`: **1000 Statements**
+* `--chunk-bytes`: **8 MiB**
+* `--batch-delay`: **0 ms**
+* **Exklusivregel**: Entweder `--chunk-size` **oder** `--chunk-bytes`.
+
+### Neue Helferfunktionen
+
+```bash
+# create chunks from file/stdin according to size/bytes limits
+chnk() {
+  # Tokenizer + Batcher
+}
+
+# inject a single chunk into Neo4j inside an explicit transaction
+injchk() {
+  # :begin ... :commit piped to cypher-shell
+}
+```
+
+`cmbcmp()` und `injmxf()` nutzen dann `chnk | injchk` in der gewünschten Reihenfolge mit Logging, Error-Stop, optionalem Delay.
+
+## Pipeline
+
+### README
 
 - Align README
 
@@ -45,8 +79,6 @@ apoc-2025.07.0-all.jar ✅
 
 Lade genau **diese** Datei herunter.
 
----
-
 ##### 📦 2. **Ins Plugin-Verzeichnis kopieren**
 
 Angenommen dein Neo4j-Home ist `/var/lib/neo4j` oder `/usr/local/neo4j`, dann:
@@ -61,8 +93,6 @@ cp apoc-2025.07.0-all.jar /path/to/neo4j/plugins/
 rm /path/to/neo4j/plugins/apoc-2025.07.0-core.jar
 ```
 
----
-
 ##### ⚙️ 3. **`apoc.conf` prüfen**
 
 Die Datei `apoc.conf` muss im Konfig-Verzeichnis (z. B. `/conf` oder `/etc/neo4j`) liegen und **mindestens** enthalten:
@@ -74,8 +104,6 @@ apoc.import.file.use_neo4j_config=true
 apoc.cypher.runfile.enabled=true
 ```
 
----
-
 ##### 🛡️ 4. **`neo4j.conf` prüfen**
 
 Füge (falls noch nicht geschehen) hinzu:
@@ -84,8 +112,6 @@ Füge (falls noch nicht geschehen) hinzu:
 dbms.security.procedures.unrestricted=apoc.*
 dbms.security.procedures.allowlist=apoc.*
 ```
-
----
 
 ##### 🔄 5. **Neo4j neu starten**
 
@@ -99,9 +125,7 @@ Oder – je nach Installation:
 sudo systemctl restart neo4j
 ```
 
----
-
-#### 🧪 6. **Verifizieren**
+##### 🧪 6. **Verifizieren**
 
 ```bash
 echo 'RETURN apoc.version()' \
@@ -117,9 +141,7 @@ echo 'SHOW PROCEDURES YIELD name WHERE name CONTAINS("runFile") RETURN name;' \
 
 Wenn du dort `apoc.cypher.runFile` siehst → ✔️
 
----
-
-#### 🧠 Warum ist das so kompliziert?
+##### 🧠 Warum ist das so kompliziert?
 
 Seit Neo4j 4.x ist **APOC modularisiert**:
 
@@ -128,12 +150,7 @@ Seit Neo4j 4.x ist **APOC modularisiert**:
 
 Darum musst du diese gezielt freischalten (inkl. JAR & Konfiguration).
 
----
-
-Wenn du willst, gebe ich dir den direkten `curl`/`wget` Link zur `.jar`. Sag Bescheid.
-
-
-#### `apoc.conf`
+#### `apoc.conf` XXX
 
 ````
 apoc.export.file.enabled=true
@@ -142,11 +159,11 @@ apoc.import.file.use_neo4j_config=true
 apoc.cypher.runfile.enabled=true
 ````
 
-### CLI parameters
+#### CLI parameters
 
 Hinweis: Base-Parameter (-u, -p, -a) müssen vor dem Subcommand stehen.
 
-### Überblick: Cypher-Konstrukte & Einlesemodi
+#### Überblick: Cypher-Konstrukte & Einlesemodi
 
 | Kategorie                            | Typ                                                                         | Beschreibung                                                     | In `apply` (APOC)             | In `slurp` (Tx via cypher-shell)   |
 | ------------------------------------ | --------------------------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------- | ---------------------------------- |
@@ -157,7 +174,7 @@ Hinweis: Base-Parameter (-u, -p, -a) müssen vor dem Subcommand stehen.
 | **Cypher-Syntax-Erweiterungen**      | `FOREACH`, `UNWIND`, `WITH`, `RETURN`, `CASE`, `EXISTS`, `LIST`, `MAP` usw. | Kontrollfluss, Abfragen, Bedingungen, Aggregationen, Datenfluss  | ✅                             | ✅                                |
 | **Kommentare**                       | `// einzeilig`, `/* mehrzeilig */`                                          | Werden ignoriert, auch von APOC                                  | ✅                             | ✅                                |
 
-#### Wichtigste Unterschiede: apply vs. slurp
+##### Wichtigste Unterschiede: apply vs. slurp
 
 | Aspekt                                 | `apply` (`apoc.cypher.runFile`)                    | `slurp` (via `cypher-shell` with `:begin/:commit`)       |
 | -------------------------------------- | -------------------------------------------------- | -------------------------------------------------------- |
@@ -178,7 +195,7 @@ XXX Moment. Das heißt aber doch, das wir mit `useTx:true` auch mit APOC transak
 > 	•	useTx:true → nur für DML
 > 	•	useTx:false → für DDL + DML gemischt
 
-#### Validierung – Was muss gelten?
+##### Validierung – Was muss gelten?
 
 Für apply (APOC):
 
@@ -241,8 +258,6 @@ XXX "Datei beginnt mit :begin und endet mit :commit" NEIN! `:begin` und `:commit
 | Transaktionales Graph-only      | `slurp -g <graph.cql>` + `--ddl-pre` optional     |
 | Sicherheit & Reproduzierbarkeit | `slurp` bevorzugen                                |
 | Massive Datenmengen (Batch)     | in Zukunft: Chunking oder `apoc.periodic.iterate` |
-
-# Pipeline
 
 n/a
 
