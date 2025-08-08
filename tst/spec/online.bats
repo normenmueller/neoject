@@ -14,7 +14,7 @@ setup() {
   [[ "$output" == *"Connection OK"* ]]
 }
 
-@test "[online] succeeds with monolithic injection w/ --reset-db" {
+@test "[online] 'mixed/living.cypher' succeeds with monolithic injection w/ --reset-db" {
   # 1) inject
   run $neoject \
     -u neo4j \
@@ -67,7 +67,7 @@ setup() {
   [ "$rel_count" -eq 2 ]
 }
 
-@test "[online] succeeds with monolithic injection w/ --clean-db" {
+@test "[online] 'mixed/living.cypher' succeeds with monolithic injection w/ --clean-db" {
   # 1) inject
   run $neoject \
     -u neo4j \
@@ -120,7 +120,21 @@ setup() {
   [ "$rel_count" -eq 2 ]
 }
 
-@test "[online] succeeds with modular injection w/ --reset-db" {
+@test "[online] 'divided/fun/fun-grp.cql' succeeds with modular injection w/ --reset-db" {
+  # 1) inject
+  run $neoject \
+    -u neo4j \
+    -p 12345678 \
+    -a neo4j://localhost:7687 \
+    inject --reset-db \
+    -g "./tst/data/well-formed/valid/divided/fun/fun-grp.cql"
+  [ "$status" -eq 0 ]
+
+  node_count=$(cypher-shell -u neo4j -p 12345678 -a neo4j://localhost:7687 -d neo4j --format plain --non-interactive "MATCH (n) RETURN count(n) AS c" | tail -n +2)
+  [ "$node_count" -ge 2 ]
+}
+
+@test "[online] 'divided/living/living-*.cql' succeeds with modular injection w/ --reset-db" {
   # 1) inject
   run $neoject \
     -u neo4j \
@@ -174,7 +188,7 @@ setup() {
   [ "$rel_count" -eq 2 ]
 }
 
-@test "[online] succeeds with modular injection w/ --clean-db" {
+@test "[online] 'divided/living/living-*.cql' succeeds with modular injection w/ --clean-db" {
   # 1) inject
   run $neoject \
     -u neo4j \

@@ -1,6 +1,6 @@
 ---
 title: Architecture Decision Log (ADL)
-version: 0.1.7
+version: 0.1.8
 ...
 
 # Overview
@@ -154,6 +154,21 @@ Wrapping via `:begin ... :commit` ensures:
 - CI/CD runs are deterministic
 
 The need for `WITH`/`MATCH` to carry variables across statements is a separate Cypher design rule — wrapping does not bypass it.
+
+> **Risk of large single transactions (OOM / transaction limits)**
+>
+> Executing all DML in one `:begin ... :commit` block means Neo4j holds the entire transaction in memory until commit. With large datasets, this can cause:
+>
+> - OOM (Out Of Memory) errors due to heap exhaustion
+> - Transaction timeouts if the commit phase is too long
+>
+> This is especially risky when:
+>
+> - Importing via large UNWIND lists
+> - Executing thousands of CREATE or MERGE statements in one go
+> - Combining complex constraints or index builds with heavy data writes
+>
+> Mitigation: In such cases, batching or chunking of DML should be considered instead of one atomic transaction.
 
 ## Consequences
 
@@ -375,4 +390,80 @@ Wrapping in `:begin/:commit` ensures atomicity, but **not** variable visibility.
 
 - Add `neoject lint` to statically check modular files
 - Provide examples and tooling to verify graph shape post-import
+
+# ADR-006 (DRAFT): Prefer `cypher-shell` as primary import path; use APOC only as auxiliary tooling
+<a name="adr-no-apoc-runfile-primary"></a>
+
+## Status
+
+DRAFT
+
+- Übersetzen auf Englisch
+- Als Entscheidung und nicht als Empfehlung formulieren! Es muss klar ersichtlich sein, warum wir uns für den Import gegen APOC entschieden haben (denn komplett gegen APOC sind wir ja nicht - cf. `clsdb`)
+
+## Context
+
+`neoject` must reliably ingest **very large graph initializations** (≫100 MB) in Neo4j. Es gibt zwei naheliegende Pfade:
+
+1. **Clientseitig** via `cypher-shell` (offizielles CLI), Dateien per `-f` oder über STDIN einspeisen, Transaktionen im Client steuern.
+2. **Serverseitig** via **APOC** (z. B. `CALL apoc.cypher.runFile("file:///...")`), das Dateien aus dem **Server‑Import‑Pfad** liest und innerhalb der DB ausführt.
+
+Wir nutzen APOC bereits zielgerichtet in `clean-db` (`apoc.periodic.iterate`) zum **batchweisen Löschen**. Es stellt sich die Frage, ob wir APOC auch als **primären Importpfad** verwenden sollten.
+
+## Decision
+
+`neoject` verwendet **`cypher-shell` als primären Importpfad**.
+**APOC bleibt optionales Hilfsmittel** (z. B. für Cleanup/Batching), wird **nicht** für den allgemeinen Import vorausgesetzt.
+
+## Rationale
+
+**1) Portability & Operations**
+- `cypher-shell` ist **offiziell**, überall verfügbar, **ohne Plugin‑Pflicht**.
+- APOC erfordert Installation, passende `apoc.*`‑Konfiguration, Import‑Pfad, ggf. Neustart und Security‑Freigaben — in vielen Umgebungen (Prod/Cloud) unerwünscht.
+
+**2) Security Surface**
+- `apoc.cypher.runFile` öffnet **serverseitigen** Dateizugriff (Import‑Verzeichnis). Viele Teams schließen das aus Sicherheitsgründen aus.
+- `cypher-shell` liest Dateien **clientseitig** und sendet nur Cypher — geringere Angriffsoberfläche.
+
+**3) Path/Deployment Friction**
+- APOC erwartet Files **auf dem Server** (Import‑Pfad). CI/CD muss Volumes mounten, Rechte setzen, Pfade abbilden.
+- `cypher-shell` funktioniert out‑of‑the‑box aus dem Runner: Datei lokal/aus der Pipeline → CLI/STDIN.
+
+**4) Error Handling & DX (Developer Experience)**
+- `cypher-shell` bietet klares Exit‑Code‑Verhalten, `--fail-fast`, sauberes Stdout/Stderr → **perfekt für BATS/CI**.
+- `apoc.cypher.runFile` parst per Semikolon; Mischfälle (Kommentare, leere Zeilen, Meta‑Kommandos) können fragile Fehlerbilder erzeugen. Zeilen‑Zuordnung/Logs sind oft schlechter.
+
+**5) Transaction Model & Memory**
+- APOC läuft **serverseitig**; große Transaktionen können **ebenfalls** zu OOM/Timeouts führen.
+- „Zeile‑für‑Zeile“ ist **nicht automatisch**; ohne explicites Batching (z. B. `apoc.periodic.iterate`) werden nicht automatisch kleine, getrennte Commits erzeugt.
+- Mit `cypher-shell` behalten wir die **volle Kontrolle über Transaktionsgrenzen** – heute: 1 TX für `-g`; morgen: **clientseitiges Chunking** (geplant) mit eindeutigem Logging pro Batch.
+
+**6) Modulare Semantik (DDL vs. DML)**
+- Unser Modell trennt DDL (non‑transactional) und DML (`-g` → eine explizite TX).
+- `runFile` verwischt diese Grenze leicht, wenn DDL und DML semikolon‑getrennt in einem Server‑Call landen.
+
+## Technical Justification
+
+- **Primärer Pfad** bleibt leichtgewichtig, reproduzierbar und **Plugin‑frei**.
+- Logging/Fehlercodes von `cypher-shell` verbessern **Determinismus und Testbarkeit** (BATS, CI/CD).
+- Das Risiko großer Transaktionen (OOM/Timeout) adressieren wir nicht mit einem Wechsel auf APOC, sondern mit **geplantem clientseitigem Chunking** (siehe Future Considerations und ADR‑003).
+
+## Consequences
+
+- **Keine APOC‑Pflicht** für Standard‑Imports; geringere Hürde für Nutzer.
+- APOC bleibt **gezielt** im Einsatz (z. B. `clean-db` via `apoc.periodic.iterate`).
+- Für extrem große Datenmengen wird `neoject` mittelfristig **clientseitiges Batching** anbieten (ohne APOC‑Zwang).
+
+## Alternatives Considered
+
+- **APOC `runFile` als Standard:** abgelehnt wegen Plugin‑Pflicht, Security-/Ops‑Reibung, Import‑Pfad‑Kopplung, schwächerer DX/Fehlerdiagnostik.
+- **Gemischter Default (APOC bei großen Files):** abgelehnt; wechselnde Codepfade erschweren Debugging/Support. Ein klarer Default ist vorzuziehen.
+- **Nur APOC (kein cypher-shell):** abgelehnt; verschlechtert Portabilität und CI‑Eignung.
+
+## Future Considerations
+
+- **Clientseitiges Chunking** für `-g` (z. B. N Statements/UNWIND‑Größe pro TX) zur Vermeidung von OOM/Timeouts.
+- Optionales **Experten‑Flag** (z. B. `--apoc-run-file`) mit klaren Hinweisen: APOC‑Installation, Import‑Pfad, Security‑Implikationen — **kein** Default.
+- Leitfäden/Modi für **Massendaten**: `LOAD CSV`, `neo4j-admin import` als empfohlene Wege für *very large* initial loads.
+
 
