@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
+# neoject © 2025 nemron
 set -euo pipefail
 > neoject.log
 
-VERSION="0.2.0"
+VERSION="0.3.10"
 
 # -----------------------------------------------------------------------------
 # Exit Codes
@@ -46,6 +47,17 @@ DDL_PRE=""
 DDL_POST=""
 MIXED_FILE=""
 
+# chunking controls
+CHUNKED=false        # -f needs explicit opt-in
+CHUNK_STMTS=0        # statements per chunk
+CHUNK_BYTES=0        # bytes per chunk
+BATCH_DELAY_MS=0     # delay between chunks (milliseconds)
+
+# Defaults for -g (chunking always on)
+DEFAULT_G_CHUNK_STMTS=1000               # 1000 Statements per default
+DEFAULT_G_CHUNK_BYTES=$((8*1024*1024))   # 8 MiB
+DEFAULT_G_DELAY_MS=0                     # 0 ms delay per default
+
 # -----------------------------------------------------------------------------
 # Logging & Help
 # -----------------------------------------------------------------------------
@@ -60,36 +72,30 @@ usage() {
 © 2025 nemron
 
 Usage:
-  neoject.sh -u <user> -p <password> -a <address> [-d <database>] <command> [args]
+  neoject -u <user> -p <password> -a <address> [-d <database>] <command> [args]
 
-⚠️  Note: Global options (-u/-p/-a/-d) must come **before** the subcommand.
-         Subcommand-specific options come **after** the subcommand.
+⚠️  Global options (-u/-p/-a/-d) must come **before** the subcommand.
 
 Subcommands:
   inject
-    ( -g <graph.cypher> [--ddl-pre <pre.cypher>] [--ddl-post <post.cypher>]
-    | -f <mixed.cypher>
-    ) [--clean-db] [--reset-db]
+    Injects modular (-g) or monolithic (-f) Cypher-based graph initializations
 
   test-con
       Test Neo4j connectivity (no DB changes)
 
   clean-db
-      Wipes all data from $DBNAME
+      Wipes all data from \$DBNAME
 
   reset-db
-      Drops and recreates database $DBNAME
-      (requires system access!)
+      Drops and recreates database \$DBNAME (requires system access!)
 
 Base Options:
   -u|--user     <user>  Neo4j username (required)
   -p|--password <pass>  Neo4j password (required)
-  -a|--address  <addr>  Bolt URI e.g. {bolt, neo4j}://localhost:7687 (required)
+  -a|--address  <addr>  Bolt/Neo4j URI e.g. neo4j://localhost:7687 (required)
   -d|--database <db>    Database to use (default: neo4j)
 
-Notes:
-  - Exactly one sub-command must be provided
-  - --clean-db and --reset-db are mutually exclusive
+ℹ️  Run 'neoject <command> --help' for details on a subcommand.
 EOF
   exit ${1:-$EXIT_CLI_USAGE}
 }
@@ -101,7 +107,7 @@ using() {
 🧬 Help: test-con
 
 Usage:
-  neoject.sh test-con
+  neoject test-con
 
 Description:
   Verifies connectivity/authentication with given -u/-p/-a[-d] parameters.
@@ -112,26 +118,33 @@ EOF
       cat <<EOF
 🧬 Help: inject
 
-# Monolithic
+  Modular mode (-g):
+    neoject inject -g <graph.cypher>
+        [--ddl-pre <pre.cypher>] [--ddl-post <post.cypher>]
+        [--clean-db] [--reset-db]
+        [--chunk-stmts <N> | --chunk-bytes <M>] [--batch-delay <ms>]
 
-Usage:
-  neoject.sh inject -f <mixed.cypher> [--clean-db] [--reset-db]
+    Description:
+      Modular execution of DDL pre, the DML graph, and DDL post.
 
-Description:
-  Monolithic execution of a mixed Cypher file (DDL + DML) via cypher-shell -f.
-  Each statement runs in its own implicit transaction. Supports optional
-  database reset/clean before import.
+    Notes:
+      - Chunking is always ON in -g mode (default: --chunk-stmts $DEFAULT_G_CHUNK_STMTS,
+        --chunk-bytes $DEFAULT_G_CHUNK_BYTES, and --batch-delay=$DEFAULT_G_DELAY_MS ms)
+      - --chunk-stmts and --chunk-bytes are mutually exclusive
 
-# Modular
+  Monolithic mode (-f):
+    neoject inject -f <mixed.cypher>
+        [--clean-db] [--reset-db]
+        [--chunked [--chunk-stmts <N> | --chunk-bytes <M>] [--batch-delay <ms>]]
 
-Usage:
-  neoject.sh inject -g <graph.cypher> [--ddl-pre <pre.cypher>]
-    [--ddl-post <post.cypher>] [--clean-db] [--reset-db]
+    Description:
+      Monolithic execution of a mixed Cypher file (DDL + DML) via
+      'cypher-shell -f'. With --chunked, executes in explicit transactional
+      chunks.
 
-Description:
-  Modular exection of DDL pre-statements (if provided), the DML graph
-  (executed inside *one* explicit transaction), and DDL post-statements
-  (if provided). Supports optional database reset/clean before import.
+    Notes:
+      - Chunking is OFF by default in -f mode; enable with --chunked
+      - --chunk-stmts and --chunk-bytes are mutually exclusive
 EOF
       exit $EXIT_SUCCESS
       ;;
@@ -140,13 +153,11 @@ EOF
 🧬 Help: clean-db
 
 Usage:
-  neoject.sh clean-db
+  neoject clean-db
 
 Description:
   Removes all nodes, relationships, constraints, and indexes from the database.
   Internal metadata such as Labels, Property Keys, and Relationship Types remain.
-
-  Use this if you want to clear data but retain schema metadata.
 
 Requires:
   - ⚠️ APOC plugin installed
@@ -159,12 +170,11 @@ EOF
 🧬 Help: reset-db
 
 Usage:
-  neoject.sh reset-db
+  neoject reset-db
 
 Description:
   Drops and recreates the database defined via -d (default: neo4j).
-  ⚠️  This removes **all data, schema, and internal metadata** —
-     including Labels, Property Keys, and Relationship Types.
+  ⚠️  This removes **all data, schema, and internal metadata**.
 
 Requires:
   - SYSTEM database access
@@ -185,6 +195,13 @@ EOF
 check_cli_clsrst() {
   if [[ "$RESET_DB" == "true" && "$CLEAN_DB" == "true" ]]; then
     log "❌ --reset-db and --clean-db are exclusive"
+    exit $EXIT_CLI_USAGE
+  fi
+}
+
+check_cli_stby() {
+  if [[ $CHUNK_STMTS -gt 0 && $CHUNK_BYTES -gt 0 ]]; then
+    log "❌ --chunk-stmts and --chunk-bytes are mutually exclusive"
     exit $EXIT_CLI_USAGE
   fi
 }
@@ -211,19 +228,144 @@ check_db_apocext() {
 }
 
 # -----------------------------------------------------------------------------
+# Utilities
+# -----------------------------------------------------------------------------
+
+sleepFor() {
+  local ms="$1"
+  [[ "$ms" -le 0 ]] && return 0
+  # portable enough: awk for float seconds
+  local sec
+  sec=$(awk -v m="$ms" 'BEGIN{printf "%.3f", m/1000.0}')
+  sleep "$sec"
+}
+
+fsize() {
+  if stat --version >/dev/null 2>&1;
+    then stat -c %s "$1";
+    else stat -f %z "$1";
+  fi
+}
+
+# -----------------------------------------------------------------------------
 # Low level actions
 # -----------------------------------------------------------------------------
 
-# inject mixed file
+# create chunks according to size/bytes limits.
+# chunk flush occurs as soon as one of the two
+# values is reached.
+# output: prints one chunk file path per line (in order).
+chk() {
+  local file="$1"
+  local max_stmt="$2"     # statements per chunk (0 disables)
+  local max_bytes="$3"    # bytes per chunk (0 disables)
+
+  [[ ! -s "$file" ]] && { log "❌ Input missing for chk: $file"; exit $EXIT_CLI_FILE_UNREADABLE; }
+
+  local tmpdir
+  tmpdir="$(mktemp -d -t neoject-chunks-XXXXXX)"
+  # NOTE: no trap here; caller cleans up $tmpdir
+
+  log "🧩 Chunking '$file' → dir: $tmpdir (max_stmt=${max_stmt:-0}, max_bytes=${max_bytes:-0})"
+
+  # State machine for semicolon-terminated statements; respects quotes/backticks
+  local buf="" stmt_count=0 chunk_bytes=0 chunk_idx=0
+  local in_sq=0 in_dq=0 in_bt=0 esc=0
+  local IFS= # read raw
+
+  while IFS= read -r -n 1 ch || [[ -n "$ch" ]]; do
+    buf+="$ch"
+
+    # toggle states (quotes/backticks), respect escapes in double/single quotes
+    if [[ $esc -eq 1 ]]; then
+      esc=0
+    else
+      if [[ "$ch" == "\\" ]]; then
+        # only meaningful inside quotes, but harmless elsewhere
+        esc=1
+      elif [[ $in_sq -eq 1 ]]; then
+        [[ "$ch" == "'" ]] && in_sq=0
+      elif [[ $in_dq -eq 1 ]]; then
+        [[ "$ch" == '"' ]] && in_dq=0
+      elif [[ $in_bt -eq 1 ]]; then
+        [[ "$ch" == '`' ]] && in_bt=0
+      else
+        case "$ch" in
+          "'") in_sq=1 ;;
+          '"') in_dq=1 ;;
+          '`') in_bt=1 ;;
+        esac
+      fi
+    fi
+
+    # detect statement end (semicolon outside quotes/backticks)
+    if [[ "$ch" == ";" && $in_sq -eq 0 && $in_dq -eq 0 && $in_bt -eq 0 ]]; then
+      ((stmt_count++))
+    fi
+
+    # update bytes AFTER adding char
+    ((chunk_bytes++))
+
+    local flush=0
+    # statement-based boundary
+    if [[ $max_stmt -gt 0 && $stmt_count -ge $max_stmt ]]; then
+      flush=1
+    fi
+    # byte-based boundary
+    if [[ $max_bytes -gt 0 && $chunk_bytes -ge $max_bytes ]]; then
+      flush=1
+    fi
+
+    if [[ $flush -eq 1 ]]; then
+      ((chunk_idx++))
+      local chunk="$tmpdir/chunk.$(printf "%06d" "$chunk_idx").cypher"
+      printf "%s" "$buf" >"$chunk"
+      echo "$chunk"
+      # reset counters/state for next chunk
+      buf=""
+      stmt_count=0
+      chunk_bytes=0
+    fi
+  done <"$file"
+
+  # last tail
+  if [[ -n "$buf" ]]; then
+    ((chunk_idx++))
+    local chunk="$tmpdir/chunk.$(printf "%06d" "$chunk_idx").cypher"
+    printf "%s" "$buf" >"$chunk"
+    echo "$chunk"
+  fi
+}
+
+# inject a single chunk into Neo4j inside an explicit transaction
+injchk() {
+  local chunk_file="$1"
+  [[ ! -s "$chunk_file" ]] && { log "❌ Empty/missing chunk: $chunk_file"; exit $EXIT_DB_IMPORT_FAILED; }
+
+  log "🚚 Executing chunk: $(basename "$chunk_file") (size: $(wc -c <"$chunk_file") bytes)"
+  {
+    echo ":begin"
+    cat "$chunk_file"
+    echo ":commit"
+  } | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose --fail-fast 2>&1 | tee -a neoject.log
+
+  local rc=${PIPESTATUS[1]}
+  if [[ $rc -ne 0 ]]; then
+    log "❌ Chunk failed (exit code $rc): $chunk_file"
+    exit $EXIT_DB_IMPORT_FAILED
+  fi
+}
+
+# inject mixed file (no chunking)
 injmxf() {
   local file="$1"
-
   cypher-shell \
     -u "$USER" \
     -p "$PASSWORD" \
     -a "$ADDRESS" \
     -d "$DBNAME" \
     --format verbose \
+    --fail-fast \
     -f "$file" 2>&1 | tee -a neoject.log
 
   local rc=${PIPESTATUS[0]}
@@ -233,7 +375,7 @@ injmxf() {
   fi
 }
 
-# combine components
+# combine components for -g (chunked by default)
 cmbcmp() {
   if [[ -n "$DDL_PRE" ]]; then
     log "📄 Executing DDL PRE"
@@ -243,17 +385,32 @@ cmbcmp() {
     fi
   fi
 
-  log "📦 Importing DML graph as one transaction"
-  tee -a neoject.log <<EOF | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose --fail-fast 2>&1
-:begin
-$(cat "$GRAPH")
-:commit
-EOF
+  # Determine effective chunking parameters for -g
+  local eff_stmts="$CHUNK_STMTS"
+  local eff_bytes="$CHUNK_BYTES"
+  local eff_delay="$BATCH_DELAY_MS"
 
-  if [[ ${PIPESTATUS[1]} -ne 0 ]]; then
-    log "❌ Graph import failed"
-    exit $EXIT_DB_IMPORT_FAILED
+  if [[ $eff_stmts -eq 0 && $eff_bytes -eq 0 ]]; then
+    eff_stmts="$DEFAULT_G_CHUNK_STMTS"
+    eff_bytes="$DEFAULT_G_CHUNK_BYTES"
+    eff_delay="$DEFAULT_G_DELAY_MS"
   fi
+
+  log "📦 Importing DML graph in chunks (stmts=${eff_stmts:-0}, bytes=${eff_bytes:-0}, delay=${eff_delay}ms)"
+  local chunklist
+  local chunkdir=""
+  chunklist="$(chk "$GRAPH" "$eff_stmts" "$eff_bytes")"
+  local n=0
+  while read -r chunk; do
+    [[ -z "$chunk" ]] && continue
+    [[ -z "$chunkdir" ]] && chunkdir="$(dirname "$chunk")"
+    ((n++))
+    log "➡️  Chunk $n"
+    injchk "$chunk"
+    sleepFor "$eff_delay"
+  done <<<"$chunklist"
+  [[ -n "$chunkdir" ]] && rm -rf "$chunkdir"
+  log "✅ DML graph imported in $n chunk(s)"
 
   if [[ -n "$DDL_POST" ]]; then
     log "📄 Executing DDL POST"
@@ -264,7 +421,6 @@ EOF
   fi
 }
 
-# reset db
 rstdb() {
   local script
   script=$(mktemp)
@@ -292,7 +448,6 @@ EOF
       return 0
     fi
     log "⏳ Waiting for '$DBNAME' to come online (status='$status')… ($i/30)"
-    return 0
     sleep 1
   done
 
@@ -300,8 +455,9 @@ EOF
   exit $EXIT_DB_TIMEOUT
 }
 
-# clean db
 clsdb() {
+  check_db_apocext
+
   log "  ➤ Deleting nodes via APOC"
   if ! cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format plain <<<'CALL apoc.periodic.iterate("MATCH (n) RETURN n", "DETACH DELETE n", {batchSize:10000}) YIELD batches RETURN batches;' \
         | tee -a neoject.log; then
@@ -336,7 +492,7 @@ clsdb() {
 # Top level commands
 # -----------------------------------------------------------------------------
 
-test-con() {
+test_con() {
   if cypher-shell \
        -u "$USER" \
        -p "$PASSWORD" \
@@ -355,14 +511,14 @@ test-con() {
   fi
 }
 
-inject-modu() {
+inject_modu() {
   [[ ! -s "$GRAPH" ]]                      && { log "❌ Graph file missing: $GRAPH"; exit $EXIT_CLI_FILE_UNREADABLE; }
   [[ -n "$DDL_PRE" && ! -s "$DDL_PRE" ]]   && { log "❌ DDL pre missing";  exit $EXIT_CLI_FILE_UNREADABLE; }
   [[ -n "$DDL_POST" && ! -s "$DDL_POST" ]] && { log "❌ DDL post missing"; exit $EXIT_CLI_FILE_UNREADABLE; }
 
   check_cli_clsrst
+  check_cli_stby
   check_db_version
-  check_db_apocext
 
   if [[ "$CLEAN_DB" == "true" ]]; then
     log "🧹 Cleaning database '$DBNAME' before injection…"
@@ -374,10 +530,8 @@ inject-modu() {
     rstdb
   fi
 
-  log "📥 Merging DDL pre, DML graph, and DDL post"
-
+  log "📥 Merging DDL pre, DML graph (chunked), and DDL post"
   cmbcmp
-
   log "✅ Merge complete"
   exit $EXIT_SUCCESS
 }
@@ -389,8 +543,8 @@ inject_mono() {
   fi
 
   check_cli_clsrst
+  check_cli_stby
   check_db_version
-  check_db_apocext
 
   if [[ "$CLEAN_DB" == "true" ]]; then
     log "🧹 Cleaning database '$DBNAME' before injection…"
@@ -402,22 +556,49 @@ inject_mono() {
     rstdb
   fi
 
-  log "📥 Injecting mixed Cypher via file: $MIXED_FILE"
+  if [[ "$CHUNKED" == "true" ]]; then
+    # For -f with chunking, if user gave none, choose a conservative default
+    local eff_stmts="$CHUNK_STMTS"
+    local eff_bytes="$CHUNK_BYTES"
 
-  injmxf "$MIXED_FILE"
+    if [[ $eff_stmts -eq 0 && $eff_bytes -eq 0 ]]; then
+      eff_bytes="$(fsize "$MIXED_FILE")"
+    fi
 
-  log "✅ Injection complete"
+    log "📥 Injecting mixed file in chunks (stmts=${eff_stmts:-0}, bytes=${eff_bytes:-0}, delay=${BATCH_DELAY_MS}ms): $MIXED_FILE"
+    local chunklist
+    local chunkdir=""
+    chunklist="$(chk "$MIXED_FILE" "$eff_stmts" "$eff_bytes")"
+
+    local n=0
+    while read -r chunk; do
+      [[ -z "$chunk" ]] && continue
+      [[ -z "$chunkdir" ]] && chunkdir="$(dirname "$chunk")"
+      ((n++))
+      log "➡️  Chunk $n"
+      injchk "$chunk"
+      sleepFor "$BATCH_DELAY_MS"
+    done <<<"$chunklist"
+    [[ -n "$chunkdir" ]] && rm -rf "$chunkdir"
+    log "✅ Injection complete in $n chunk(s)"
+  else
+    log "📥 Injecting mixed Cypher via file: $MIXED_FILE"
+    injmxf "$MIXED_FILE"
+    log "✅ Injection complete"
+  fi
+
   exit $EXIT_SUCCESS
 }
 
-clean-db() {
+clean_db() {
   log "🧹 Cleaning database '$DBNAME'…"
-  check_db_version; clsdb
+  check_db_version
+  clsdb
   log "✅ Database cleaning completed"
   exit $EXIT_SUCCESS
 }
 
-reset-db() {
+reset_db() {
   log "⚠️  Resetting database '$DBNAME'…"
   check_db_version; rstdb
   log "✅ Database reset completed"
@@ -442,12 +623,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     -*)
       echo "❌ Invalid global flag: $1";
-      echo "👉 Run 'neoject help' for usage." >&2
+      echo "👉 Run 'neoject --help' for usage." >&2
       exit $EXIT_CLI_INVALID_GLOBAL_FLAG
       ;;
     *)
       echo "❌ Invalid sub-command: $1";
-      echo "👉 Run 'neoject help' for usage." >&2
+      echo "👉 Run 'neoject --help' for usage." >&2
       exit $EXIT_CLI_INVALID_SUBCOMMAND
       ;;
   esac
@@ -456,7 +637,7 @@ done
 # Base validation
 if [[ -z "$USER" || -z "$PASSWORD" || -z "$ADDRESS" ]]; then
   echo "❌ Missing required global options: -u <user>, -p <password> and -a <address> must all be provided" >&2
-  echo "👉 Run 'neoject help' for usage." >&2
+  echo "👉 Run 'neoject --help' for usage." >&2
   exit $EXIT_CLI_MISSING_BASE_PARAMS
 fi
 
@@ -465,22 +646,17 @@ case "$CMD" in
   test-con)
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        -h|--help)
-          using test-con
-          ;;
+        -h|--help) using test-con ;;
         --clean-db|--reset-db)
-          echo "❌ test-con does not accept --clean-db/--reset-db"
-          echo "👉 Run 'neoject help' for usage." >&2
+          echo "❌ test-con does not accept --clean-db/--reset-db" >&2
           exit $EXIT_CLI_INVALID_DDL_USAGE
           ;;
         -*)
-          echo "❌ Invalid test-con flag: $1"
-          echo "👉 Run 'neoject help' for usage." >&2
+          echo "❌ Invalid test-con flag: $1" >&2
           exit $EXIT_CLI_INVALID_SUBCOMMAND_FLAG
           ;;
         *)
-          echo "❌ Invalid test-con sub-command: $1"
-          echo "👉 Run 'neoject help' for usage." >&2
+          echo "❌ Invalid test-con sub-command: $1" >&2
           exit $EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD
           ;;
       esac
@@ -489,38 +665,53 @@ case "$CMD" in
   inject)
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        -g)           GRAPH="$2";      shift 2 ;;
-        --ddl-pre)    DDL_PRE="$2";    shift 2 ;;
-        --ddl-post)   DDL_POST="$2";   shift 2 ;;
-        -f)           MIXED_FILE="$2"; shift 2 ;;
-        --clean-db)   CLEAN_DB=true;   shift   ;;
-        --reset-db)   RESET_DB=true;   shift   ;;
-        -h|--help)    using inject             ;;
+        -g)            GRAPH="$2";               shift 2 ;;
+        --ddl-pre)     DDL_PRE="$2";             shift 2 ;;
+        --ddl-post)    DDL_POST="$2";            shift 2 ;;
+        -f)            MIXED_FILE="$2";          shift 2 ;;
+        --chunked)     CHUNKED=true;             shift   ;;
+        --chunk-stmts) CHUNK_STMTS="${2:-0}";    shift 2 ;;
+        --chunk-bytes) CHUNK_BYTES="${2:-0}";    shift 2 ;;
+        --batch-delay) BATCH_DELAY_MS="${2:-0}"; shift 2 ;;
+        --clean-db)    CLEAN_DB=true;            shift   ;;
+        --reset-db)    RESET_DB=true;            shift   ;;
+        -h|--help)     using inject                      ;;
         -*)
-          echo "❌ Invalid inject flag: $1"
-          echo "👉 Run 'neoject help' for usage." >&2
+          echo "❌ Invalid inject flag: $1" >&2
           exit $EXIT_CLI_INVALID_SUBCOMMAND_FLAG
           ;;
         *)
-          echo "❌ Invalid inject sub-command: $1"
-          echo "👉 Run 'neoject help' for usage." >&2
+          echo "❌ Invalid inject sub-command: $1" >&2
           exit $EXIT_CLI_INVALID_SUBCOMMAND_SUBCMD
           ;;
       esac
     done
-    # Validate mutual exclusivity
+
+    # Validate mutual exclusivity -g / -f
     if [[ -n "$GRAPH" && -n "$MIXED_FILE" ]]; then
-      echo "❌ Options -g and -f are mutually exclusive"
+      echo "❌ Options -g and -f are mutually exclusive" >&2
       exit $EXIT_CLI_USAGE
     fi
     if [[ -z "$GRAPH" && -z "$MIXED_FILE" ]]; then
-      echo "❌ Either -g or -f must be provided"
+      echo "❌ Either -g or -f must be provided" >&2
       exit $EXIT_CLI_USAGE
     fi
     # Validate --ddl-pre and --ddl-post only valid with -g
     if [[ -n "$MIXED_FILE" && ( -n "$DDL_PRE" || -n "$DDL_POST" ) ]]; then
-      echo "❌ --ddl-pre and --ddl-post can only be used with -g <graph.cypher>"
+      echo "❌ --ddl-pre and --ddl-post can only be used with -g <graph.cypher>" >&2
       exit $EXIT_CLI_USAGE
+    fi
+
+    # Chunking rules per mode
+    if [[ -n "$GRAPH" ]]; then
+      # -g: chunking always on; defaults apply if user didn't specify
+      :
+    else
+      # -f: only valid if --chunked is set
+      if [[ "$CHUNKED" != "true" && ( $CHUNK_STMTS -gt 0 || $CHUNK_BYTES -gt 0 || $BATCH_DELAY_MS -gt 0 ) ]]; then
+        echo "❌ --chunk-stmts/--chunk-bytes/--batch-delay require --chunked in -f mode" >&2
+        exit $EXIT_CLI_USAGE
+      fi
     fi
     ;;
   clean-db)
@@ -528,8 +719,7 @@ case "$CMD" in
       case "$1" in
         -h|--help) using clean-db ;;
         *)
-          echo "❌ clean-db takes no arguments"
-          echo "👉 Run 'neoject help reset-db' for usage." >&2
+          echo "❌ clean-db takes no arguments" >&2
           exit $EXIT_CLI_USAGE
           ;;
       esac
@@ -540,16 +730,15 @@ case "$CMD" in
       case "$1" in
         -h|--help) using reset-db ;;
         *)
-          echo "❌ reset-db takes no arguments"
-          echo "👉 Run 'neoject help reset-db' for usage." >&2
+          echo "❌ reset-db takes no arguments" >&2
           exit $EXIT_CLI_USAGE
           ;;
       esac
     done
     ;;
   *)
-    echo "❌ Missing sub-command"
-    echo "👉 Run 'neoject help' for usage." >&2
+    echo "❌ Missing sub-command" >&2
+    echo "👉 Run 'neoject --help' for usage." >&2
     exit $EXIT_CLI_MISSING_SUBCOMMAND
     ;;
 esac
@@ -562,17 +751,17 @@ case "$CMD" in
   test-con)
     $RESET_DB && usage $EXIT_CLI_INVALID_DDL_USAGE
     $CLEAN_DB && usage $EXIT_CLI_INVALID_DDL_USAGE
-    test-con
+    test_con
     ;;
   inject)
-    [[ -n "$GRAPH" ]] && inject-modu
+    [[ -n "$GRAPH" ]] && inject_modu
     [[ -n "$MIXED_FILE" ]] && inject_mono
     ;;
   clean-db)
-    clean-db
+    clean_db
     ;;
   reset-db)
-    reset-db
+    reset_db
     ;;
 esac
 

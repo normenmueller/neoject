@@ -6,35 +6,7 @@ title: Roadmap
 
 ## Current topic
 
-### Gültige Parameterkombinationen
-
-| Modus | Pflicht für Chunking | Erlaubte Flags                                   | Ausschlüsse                      |
-| ----- | -------------------- | ------------------------------------------------ | -------------------------------- |
-| `-g`  | — (immer aktiv)      | `--chunk-size`, `--chunk-bytes`, `--batch-delay` | `--chunk-size` ⊕ `--chunk-bytes` |
-| `-f`  | `--chunked`          | `--chunk-size`, `--chunk-bytes`, `--batch-delay` | `--chunk-size` ⊕ `--chunk-bytes` |
-
-### Defaultwerte für -g
-
-* `--chunk-size`: **1000 Statements**
-* `--chunk-bytes`: **8 MiB**
-* `--batch-delay`: **0 ms**
-* **Exklusivregel**: Entweder `--chunk-size` **oder** `--chunk-bytes`.
-
-### Neue Helferfunktionen
-
-```bash
-# create chunks from file/stdin according to size/bytes limits
-chnk() {
-  # Tokenizer + Batcher
-}
-
-# inject a single chunk into Neo4j inside an explicit transaction
-injchk() {
-  # :begin ... :commit piped to cypher-shell
-}
-```
-
-`cmbcmp()` und `injmxf()` nutzen dann `chnk | injchk` in der gewünschten Reihenfolge mit Logging, Error-Stop, optionalem Delay.
+Testing
 
 ## Pipeline
 
