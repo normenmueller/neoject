@@ -1,7 +1,13 @@
 #!/usr/bin/env bats
 
-load 'test_helper/bats-support' 2>/dev/null || true
-load 'test_helper/bats-assert'  2>/dev/null || true
+# bats-support
+if [ -f test_helper/bats-support/load.bash ]; then
+  load 'test_helper/bats-support/load'
+fi
+# bats-assert
+if [ -f test_helper/bats-assert/load.bash ]; then
+  load 'test_helper/bats-assert/load'
+fi
 
 # -------------------------------------------------------------------
 # Setup / Helpers
@@ -15,7 +21,8 @@ setup() {
   neo4j_url=neo4j://localhost:7687
 
   mixed="./tst/data/well-formed/valid/mixed/living.cypher"
-  grp="./tst/data/well-formed/valid/divided/living/living-grp.cql"
+
+  graph="./tst/data/well-formed/valid/divided/living/living-grp.cql"
   ddl_pre="./tst/data/well-formed/valid/divided/living/living-pre.cql"
 }
 
@@ -86,13 +93,13 @@ run_neoject() {
 }
 
 @test "[online/-g] modular import (living) with --reset-db + --ddl-pre" {
-  run_neoject inject --reset-db --ddl-pre "$ddl_pre" -g "$grp"
+  run_neoject inject --reset-db --ddl-pre "$ddl_pre" -g "$graph"
   [ "$status" -eq 0 ]
   assert_counts Person 2 City 2 LIVES_IN 2
 }
 
 @test "[online/-g] modular import (living) with --clean-db + --ddl-pre" {
-  run_neoject inject --clean-db --ddl-pre "$ddl_pre" -g "$grp"
+  run_neoject inject --clean-db --ddl-pre "$ddl_pre" -g "$graph"
   [ "$status" -eq 0 ]
   assert_counts Person 2 City 2 LIVES_IN 2
 }
@@ -136,19 +143,19 @@ run_neoject() {
 # -------------------------------------------------------------------
 
 @test "[online/-g] --chunk-stmts 1 + --reset-db" {
-  run_neoject inject --reset-db -g "$grp" --chunk-stmts 1
+  run_neoject inject --reset-db -g "$graph" --chunk-stmts 1
   [ "$status" -eq 0 ]
   assert_counts Person 2 City 2 LIVES_IN 2
 }
 
 @test "[online/-g] --chunk-bytes 64 (very small byte chunks)" {
-  run_neoject inject --reset-db -g "$grp" --chunk-bytes 64
+  run_neoject inject --reset-db -g "$graph" --chunk-bytes 64
   [ "$status" -eq 0 ]
   assert_counts Person 2 City 2 LIVES_IN 2
 }
 
 @test "[online/-g] --chunk-stmts 2 + --batch-delay 5ms + --ddl-pre" {
-  run_neoject inject --reset-db --ddl-pre "$ddl_pre" -g "$grp" --chunk-stmts 2 --batch-delay 5
+  run_neoject inject --reset-db --ddl-pre "$ddl_pre" -g "$graph" --chunk-stmts 2 --batch-delay 5
   [ "$status" -eq 0 ]
   assert_counts Person 2 City 2 LIVES_IN 2
 }

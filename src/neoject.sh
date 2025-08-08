@@ -130,7 +130,9 @@ EOF
     Notes:
       - Chunking is always ON in -g mode (default: --chunk-stmts $DEFAULT_G_CHUNK_STMTS,
         --chunk-bytes $DEFAULT_G_CHUNK_BYTES, and --batch-delay=$DEFAULT_G_DELAY_MS ms)
+      - Chunks are executed atomically in an explicit TX.
       - --chunk-stmts and --chunk-bytes are mutually exclusive
+
 
   Monolithic mode (-f):
     neoject inject -f <mixed.cypher>
@@ -139,11 +141,12 @@ EOF
 
     Description:
       Monolithic execution of a mixed Cypher file (DDL + DML) via
-      'cypher-shell -f'. With --chunked, executes in explicit transactional
-      chunks.
+      'cypher-shell -f'.
 
     Notes:
       - Chunking is OFF by default in -f mode; enable with --chunked
+      - With --chunked, chunks are executed statement by statement
+        (no explicit :begin/:commit).
       - --chunk-stmts and --chunk-bytes are mutually exclusive
 EOF
       exit $EXIT_SUCCESS
@@ -444,8 +447,10 @@ chk_trm() {
   rm -f "$normfile"
 }
 
-# inject a single chunk into Neo4j inside an explicit transaction
-injchk() {
+# Injects a chunk of a modular graph initialization (-g mode) into Neo4j
+# All DML statements in the chunk are executed within a single explicit
+# transaction (:begin / :commit).
+injtrx() {
   local chunk_file="$1"
 
   # Skip empty/whitespace-only Chunks (e.g., created by chunk boundaries)
@@ -471,8 +476,9 @@ injchk() {
   fi
 }
 
-# inject mixed file (no chunking)
-injmxf() {
+# Injects a mixed Cypher file (-f mode) into Neo4j statement-by-statement. Each
+# statement runs in its own implicit transaction (cypher-shell -f).
+injstm() {
   local file="$1"
   cypher-shell \
     -u "$USER" \
@@ -521,7 +527,7 @@ cmbcmp() {
     [[ -z "$chunkdir" ]] && chunkdir="$(dirname "$chunk")"
     ((n++))
     log "➡️  Chunk $n"
-    injchk "$chunk"
+    injtrx "$chunk"
     sleepFor "$eff_delay"
   done <<<"$chunklist"
   [[ -n "$chunkdir" ]] && rm -rf "$chunkdir"
@@ -691,14 +697,14 @@ inject_mono() {
       [[ -z "$chunkdir" ]] && chunkdir="$(dirname "$chunk")"
       ((n++))
       log "➡️  Chunk $n"
-      injchk "$chunk"
+      injstm "$chunk"
       sleepFor "$BATCH_DELAY_MS"
     done <<<"$chunklist"
     [[ -n "$chunkdir" ]] && rm -rf "$chunkdir"
     log "✅ Injection complete in $n chunk(s)"
   else
     log "📥 Injecting mixed Cypher via file: $MIXED_FILE"
-    injmxf "$MIXED_FILE"
+    injstm "$MIXED_FILE"
     log "✅ Injection complete"
   fi
 
