@@ -3,7 +3,7 @@
 set -euo pipefail
 > neoject.log
 
-VERSION="0.3.10"
+VERSION="0.3.12"
 
 # -----------------------------------------------------------------------------
 # Exit Codes
@@ -251,10 +251,9 @@ fsize() {
 # Low level actions
 # -----------------------------------------------------------------------------
 
-# create chunks according to size/bytes limits.
-# chunk flush occurs as soon as one of the two
-# values is reached.
-# output: prints one chunk file path per line (in order).
+# Create chunks according to size/bytes limits. Chunk flush occurs as soon as
+# one of the two values is reached. Prints as output one chunk file path per
+# line (in order).
 chk() {
   local file="$1"
   local max_stmt="$2"     # statements per chunk (0 disables)
@@ -262,18 +261,27 @@ chk() {
 
   [[ ! -s "$file" ]] && { log "❌ Input missing for chk: $file"; exit $EXIT_CLI_FILE_UNREADABLE; }
 
+  # Normalize CRLF -> LF so the state machine never sees '\r'
+  local normfile
+  normfile="$(mktemp)"
+  tr -d '\r' <"$file" >"$normfile"
+  file="$normfile"
+
   local tmpdir
   tmpdir="$(mktemp -d -t neoject-chunks-XXXXXX)"
-  # NOTE: no trap here; caller cleans up $tmpdir
+  # NOTE: caller cleans up $tmpdir
 
-  log "🧩 Chunking '$file' → dir: $tmpdir (max_stmt=${max_stmt:-0}, max_bytes=${max_bytes:-0})"
+  log "🧩 Chunking '$file' (max_stmt=${max_stmt:-0}, max_bytes=${max_bytes:-0})"
+  log " → dir: $tmpdir "
 
   # State machine for semicolon-terminated statements; respects quotes/backticks
   local buf="" stmt_count=0 chunk_bytes=0 chunk_idx=0
   local in_sq=0 in_dq=0 in_bt=0 esc=0
-  local IFS= # read raw
+  local at_boundary=0
 
-  while IFS= read -r -n 1 ch || [[ -n "$ch" ]]; do
+  # Keep every byte, including '\n' — delimiter set to “never occurs”
+  local IFS=                  # ← read raw, don't trim anything
+  while IFS= read -r -n 1 -d '' ch; do
     buf+="$ch"
 
     # toggle states (quotes/backticks), respect escapes in double/single quotes
@@ -281,7 +289,6 @@ chk() {
       esc=0
     else
       if [[ "$ch" == "\\" ]]; then
-        # only meaningful inside quotes, but harmless elsewhere
         esc=1
       elif [[ $in_sq -eq 1 ]]; then
         [[ "$ch" == "'" ]] && in_sq=0
@@ -301,22 +308,19 @@ chk() {
     # detect statement end (semicolon outside quotes/backticks)
     if [[ "$ch" == ";" && $in_sq -eq 0 && $in_dq -eq 0 && $in_bt -eq 0 ]]; then
       ((stmt_count++))
+      at_boundary=1
     fi
 
     # update bytes AFTER adding char
     ((chunk_bytes++))
 
-    local flush=0
+    local want_flush=0
     # statement-based boundary
-    if [[ $max_stmt -gt 0 && $stmt_count -ge $max_stmt ]]; then
-      flush=1
-    fi
+    [[ $max_stmt  -gt 0 && $stmt_count  -ge $max_stmt  ]] && want_flush=1
     # byte-based boundary
-    if [[ $max_bytes -gt 0 && $chunk_bytes -ge $max_bytes ]]; then
-      flush=1
-    fi
+    [[ $max_bytes -gt 0 && $chunk_bytes -ge $max_bytes ]] && want_flush=1
 
-    if [[ $flush -eq 1 ]]; then
+    if [[ $want_flush -eq 1 && $at_boundary -eq 1 ]]; then
       ((chunk_idx++))
       local chunk="$tmpdir/chunk.$(printf "%06d" "$chunk_idx").cypher"
       printf "%s" "$buf" >"$chunk"
@@ -325,6 +329,8 @@ chk() {
       buf=""
       stmt_count=0
       chunk_bytes=0
+      at_boundary=0
+      in_sq=0; in_dq=0; in_bt=0; esc=0
     fi
   done <"$file"
 
@@ -335,19 +341,128 @@ chk() {
     printf "%s" "$buf" >"$chunk"
     echo "$chunk"
   fi
+
+  # cleanup normalized temp
+  rm -f "$normfile"
+}
+
+# ⚠️  Currently not used
+# Decision: we remain “lossy-free”, i.e. no trimming.
+chk_trm() {
+  local file="$1"
+  local max_stmt="$2"     # statements per chunk (0 disables)
+  local max_bytes="$3"    # bytes per chunk (0 disables)
+
+  [[ ! -s "$file" ]] && { log "❌ Input missing for chk: $file"; exit $EXIT_CLI_FILE_UNREADABLE; }
+
+  # Normalize CRLF -> LF so the state machine never sees '\r'
+  local normfile
+  normfile="$(mktemp)"
+  tr -d '\r' <"$file" >"$normfile"
+  file="$normfile"
+
+  local tmpdir
+  tmpdir="$(mktemp -d -t neoject-chunks-XXXXXX)"
+  # NOTE: caller cleans up $tmpdir
+
+  log "🧩 Chunking '$file' (max_stmt=${max_stmt:-0}, max_bytes=${max_bytes:-0})"
+  log " → dir: $tmpdir "
+
+  # State machine for semicolon-terminated statements; respects quotes/backticks
+  local buf="" stmt_count=0 chunk_bytes=0 chunk_idx=0
+  local in_sq=0 in_dq=0 in_bt=0 esc=0
+  local new_chunk=1               # ✨ trim leading whitespace per chunk
+
+  # Keep every byte, including '\n' — delimiter set to “never occurs”
+  while IFS= read -r -n 1 -d '' ch; do
+    # (Optional safety) ignore stray CR if any slipped through
+    [[ "$ch" == $'\r' ]] && continue
+
+    # ✨ Trim leading whitespace at the *beginning* of a chunk
+    if [[ $new_chunk -eq 1 && "$ch" =~ [[:space:]] ]]; then
+      continue
+    fi
+
+    # toggle states (quotes/backticks), respect escapes in double/single quotes
+    if [[ $esc -eq 1 ]]; then
+      esc=0
+    else
+      if [[ "$ch" == "\\" ]]; then
+        esc=1
+      elif [[ $in_sq -eq 1 ]]; then
+        [[ "$ch" == "'" ]] && in_sq=0
+      elif [[ $in_dq -eq 1 ]]; then
+        [[ "$ch" == '"' ]] && in_dq=0
+      elif [[ $in_bt -eq 1 ]]; then
+        [[ "$ch" == '`' ]] && in_bt=0
+      else
+        case "$ch" in
+          "'") in_sq=1 ;;
+          '"') in_dq=1 ;;
+          '`') in_bt=1 ;;
+        esac
+      fi
+    fi
+
+    # now we actually append the char
+    buf+="$ch"
+    ((chunk_bytes++))
+    new_chunk=0                   # first non-trimmed char seen
+
+    # detect statement end (semicolon outside quotes/backticks)
+    if [[ "$ch" == ";" && $in_sq -eq 0 && $in_dq -eq 0 && $in_bt -eq 0 ]]; then
+      ((stmt_count++))
+    fi
+
+    # flush conditions
+    local flush=0
+    [[ $max_stmt  -gt 0 && $stmt_count  -ge $max_stmt  ]] && flush=1
+    [[ $max_bytes -gt 0 && $chunk_bytes -ge $max_bytes ]] && flush=1
+
+    if [[ $flush -eq 1 ]]; then
+      ((chunk_idx++))
+      local chunk="$tmpdir/chunk.$(printf "%06d" "$chunk_idx").cypher"
+      printf "%s" "$buf" >"$chunk"
+      echo "$chunk"
+      # reset for next chunk
+      buf=""
+      stmt_count=0
+      chunk_bytes=0
+      in_sq=0; in_dq=0; in_bt=0; esc=0
+      new_chunk=1
+    fi
+  done <"$file"
+
+  # ✨ Write the tail only if it contains non-whitespace
+  if [[ -n "$buf" && "$buf" =~ [^[:space:]] ]]; then
+    ((chunk_idx++))
+    local chunk="$tmpdir/chunk.$(printf "%06d" "$chunk_idx").cypher"
+    printf "%s" "$buf" >"$chunk"
+    echo "$chunk"
+  fi
+
+  rm -f "$normfile"
 }
 
 # inject a single chunk into Neo4j inside an explicit transaction
 injchk() {
   local chunk_file="$1"
-  [[ ! -s "$chunk_file" ]] && { log "❌ Empty/missing chunk: $chunk_file"; exit $EXIT_DB_IMPORT_FAILED; }
+
+  # Skip empty/whitespace-only Chunks (e.g., created by chunk boundaries)
+  if [[ ! -s "$chunk_file" ]] || ! grep -q '[^[:space:]]' "$chunk_file"; then
+    log "🪵 Skipping empty/whitespace chunk: $(basename "$chunk_file")"
+    return 0
+  fi
 
   log "🚚 Executing chunk: $(basename "$chunk_file") (size: $(wc -c <"$chunk_file") bytes)"
+
   {
-    echo ":begin"
+    printf ':begin\n'
     cat "$chunk_file"
-    echo ":commit"
-  } | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" --database "$DBNAME" --format verbose --fail-fast 2>&1 | tee -a neoject.log
+    printf '\n:commit\n'
+  } | cypher-shell -u "$USER" -p "$PASSWORD" -a "$ADDRESS" \
+                   --database "$DBNAME" --format verbose --fail-fast \
+                   --non-interactive 2>&1 | tee -a neoject.log
 
   local rc=${PIPESTATUS[1]}
   if [[ $rc -ne 0 ]]; then
